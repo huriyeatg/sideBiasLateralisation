@@ -56,7 +56,7 @@ class analysis:
         # Create the list 
         info = pd.DataFrame()
         # Recursively search for files ending with 'Block.mat' in all subfolders
-        animalList = ['OFZ011']
+        animalList = ['CMN001']
         badRecordingSessions = ['2023-07-07_1_OFZ008_Block.mat', '2023-07-07_3_OFZ008_Block.mat', # Not good ROIs
                                 '2023-07-11_1_OFZ008_Block.mat', '2023-07-13_2_OFZ008_Block.mat', # Not good ROIs
                                 '2023-06-13_1_OFZ009_Block.mat', '2023-07-03_1_OFZ009_Block.mat',

@@ -39,6 +39,13 @@ class analysis:
             self.recordingListPath = "C:\\Users\\Huriye\\Documents\\code\\decision-making-ev\\"
             self.rawPath           = 'Z:\\' # "D:\\decision-making-ev\\Data\\" #
             self.rootPath          = "C:\\Users\\Huriye\\Documents\\code\\decision-making-ev\\"
+        elif platform.node() == 'WIN-AL012':
+            print("Computer: Candela Windows")
+            # for Windows - Huriye PC
+            self.suite2pOutputPath = '//QNAP-AL001.dpag.ox.ac.uk/CMedina/cingulate_DMS/suite2p_output' 
+            self.recordingListPath = "C:/Users/Lak Lab/Documents/Github/sideBiasLateralisation"
+            self.rawPath           = 'Z:/' 
+            self.rootPath          = "C:/Users/Lak Lab/Documents/Github/sideBiasLateralisation"
         else:
             print('Computer setting is not set.')
         self.analysisPath = os.path.join(self.rootPath, 'analysis') # 'D:\\decision-making-ev\\analysis' # 
@@ -49,7 +56,7 @@ class analysis:
         # Create the list 
         info = pd.DataFrame()
         # Recursively search for files ending with 'Block.mat' in all subfolders
-        animalList = ['OFZ008', 'OFZ009','OFZ010','OFZ011']
+        animalList = ['OFZ011']
         badRecordingSessions = ['2023-07-07_1_OFZ008_Block.mat', '2023-07-07_3_OFZ008_Block.mat', # Not good ROIs
                                 '2023-07-11_1_OFZ008_Block.mat', '2023-07-13_2_OFZ008_Block.mat', # Not good ROIs
                                 '2023-06-13_1_OFZ009_Block.mat', '2023-07-03_1_OFZ009_Block.mat',

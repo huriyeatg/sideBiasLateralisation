@@ -1,0 +1,8 @@
+README.md
+paq2py.py
+setup.py
+paq2py.egg-info/PKG-INFO
+paq2py.egg-info/SOURCES.txt
+paq2py.egg-info/dependency_links.txt
+paq2py.egg-info/requires.txt
+paq2py.egg-info/top_level.txt

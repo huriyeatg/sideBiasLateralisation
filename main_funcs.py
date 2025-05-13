@@ -112,9 +112,7 @@ class analysis:
                             else:
                                 imaging_filename = [f for f in glob.glob(twoP_path +'\\*t-001')]
                                 imaging_filename = imaging_filename[0]
-                                roi = imaging_filename.split('_')[2]
-                                roi = re.findall(r'\d+', roi)
-                                roi = int(roi[0])
+
                         else: # This line does not appear in the code
                             roi= 0
                         
@@ -126,7 +124,6 @@ class analysis:
                                     'sessionName': fileName[:-10],
                                     'learningData': learning,
                                     'twoP':twoP_exist,
-                                    'ROI' :roi,
                                     'path': root[:-2],
                                     'sessionNameWithPath': os.path.join(root, fileName)}
                         

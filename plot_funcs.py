@@ -340,3 +340,350 @@ def scatter_sessions(dffTrace_mean1, dffTrace_mean2, analysis_params,
         axs[indx].set_xlabel(label[0])
 
     save_figureAll(savefigname,savefigpath)
+
+def plot_combined_psychometric(info):
+    """
+    Creates two plots:
+    1. Individual right turn probability vs contrast for each session
+    2. Combined mean and standard error across all sessions
+    
+    Args:
+        info: Info object containing recordingList with session information
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from scipy import stats
+    import pandas as pd
+    import os
+    
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Dictionary to store probabilities for each contrast across sessions
+    contrast_probs = {}
+    
+    # For each session in recordingList
+    for ind in range(len(info.recordingList)):
+        try:
+            session = info.recordingList.sessionName[ind]
+            print(f"\nProcessing session: {session}")
+            
+            # Construct CSV path
+            csv_path = os.path.join(info.recordingList.analysispathname[ind], 
+                                  f"{session}_CorrectedeventTimes.csv")
+            #print(f"Looking for CSV at: {csv_path}")
+            
+            # Check if file exists
+            if not os.path.exists(csv_path):
+                print(f"CSV file not found at: {csv_path}")
+                continue
+                
+            # Read CSV file
+            #print(f"Reading CSV from: {csv_path}")
+            b = pd.read_csv(csv_path)
+            
+            # Filter good trials
+            good_trials = (b['repeatNumber'] == 1) & (b['choice'] != 'NoGo')
+            
+            # Calculate contrast difference
+            c_diff = b['contrastRight'] - b['contrastLeft']
+            
+            # Calculate right turn probability for each contrast
+            unique_contrasts = np.unique(c_diff)
+            right_probs = []
+            right_probs_ci = []
+            
+            for contrast in unique_contrasts:
+                trials = (c_diff == contrast) & good_trials
+                if np.sum(trials) > 0:
+                    right_choices = (b['choice'][trials] == 'Right')
+                    prob = np.mean(right_choices)
+                    # Calculate binomial confidence interval
+                    ci = stats.binom.interval(0.95, np.sum(trials), prob)
+                    right_probs.append(prob)
+                    right_probs_ci.append([prob - ci[0]/np.sum(trials), 
+                                         ci[1]/np.sum(trials) - prob])
+                    
+                    # Store probability for combined plot
+                    if contrast not in contrast_probs:
+                        contrast_probs[contrast] = []
+                    contrast_probs[contrast].append(prob)
+            
+            # Plot individual session data
+            ax1.errorbar(unique_contrasts, right_probs, 
+                        yerr=np.array(right_probs_ci).T,
+                        fmt='o-', label=f'Session {session}', alpha=0.7)
+            
+        except Exception as e:
+            print(f"Error processing session {session}: {str(e)}")
+            continue
+    
+    # Calculate mean and standard error for each contrast
+    contrasts = sorted(contrast_probs.keys())
+    mean_probs = [np.mean(contrast_probs[c]) for c in contrasts]
+    sem_probs = [np.std(contrast_probs[c], ddof=1) / np.sqrt(len(contrast_probs[c])) 
+                for c in contrasts]
+    
+    # Plot combined mean with standard error
+    ax2.plot(contrasts, mean_probs, 'b-', label='Mean across sessions', linewidth=2)
+    ax2.fill_between(contrasts, 
+                    np.array(mean_probs) - np.array(sem_probs),
+                    np.array(mean_probs) + np.array(sem_probs),
+                    alpha=0.2, color='b')
+    
+    # Customize individual sessions plot
+    ax1.set_xlabel('Contrast')
+    ax1.set_ylabel('p(Right) & 95% CI')
+    ax1.set_title('Individual Sessions')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    ax1.set_xlim([-1, 1])
+    ax1.set_ylim([0, 1])
+    ax1.axhline(y=0.5, color='k', linestyle='--', alpha=0.3)
+    ax1.axvline(x=0, color='k', linestyle='--', alpha=0.3)
+    
+    # Customize combined plot
+    ax2.set_xlabel('Contrast')
+    ax2.set_ylabel('p(Right) & SEM')
+    ax2.set_title('Combined Mean')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    ax2.set_xlim([-1, 1])
+    ax2.set_ylim([0, 1])
+    ax2.axhline(y=0.5, color='k', linestyle='--', alpha=0.3)
+    ax2.axvline(x=0, color='k', linestyle='--', alpha=0.3)
+    
+    plt.tight_layout()
+
+
+def plot_combined_response_time(info, analysis_path):
+    """
+    Creates four plots:
+    1. Individual response time vs contrast for each session
+    2. Combined mean and standard error across all sessions
+    3. Individual response time vs contrast for each session, separated by ipsi/contra
+    4. Combined mean and standard error across all sessions, separated by ipsi/contra
+    
+    Args:
+        info: Info object containing recordingList with session information
+        analysis_path: String with the path to the analysis folder
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from scipy import stats
+    import pandas as pd
+    import os
+    import json
+    
+    # Load bias data from JSON
+    json_path = os.path.join(analysis_path, 'bias_data.json')
+    with open(json_path, 'r') as f:
+        bias_data = json.load(f)
+    
+    # Create figure with four subplots
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+    
+    # Dictionary to store response times for each contrast across sessions
+    contrast_times = {}
+    contrast_times_ipsi = {}
+    contrast_times_contra = {}
+    
+    # Define markers for different sessions
+    markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
+    
+    # For each session in recordingList
+    for ind in range(len(info.recordingList)):
+        try:
+            session = info.recordingList.sessionName[ind]
+            
+            # Get animal ID from session name
+            animal_id = session.split('_')[-1]
+            
+            # Get bias for this animal
+            if animal_id not in bias_data:
+                continue
+                
+            animal_bias = bias_data[animal_id]
+            
+            # Construct CSV path
+            csv_path = os.path.join(info.recordingList.analysispathname[ind], 
+                                  f"{session}_CorrectedeventTimes.csv")
+            
+            # Read CSV file
+            b = pd.read_csv(csv_path)
+            
+            # Filter good trials
+            good_trials = (b['repeatNumber'] == 1) & (b['choice'] != 'NoGo')
+            
+            # Calculate contrast difference
+            c_diff = b['contrastRight'] - b['contrastLeft']
+            
+            # Calculate response time
+            response_time = b['choiceCompleteTime'] - b['stimulusOnsetTime']
+            
+            # Determine which trials are ipsi/contra based on bias
+            if animal_bias == 'Left':
+                ipsi_trials = b['contrastLeft'] > b['contrastRight']
+                contra_trials = b['contrastRight'] > b['contrastLeft']
+            else:  # animal_bias == 'Right'
+                ipsi_trials = b['contrastRight'] > b['contrastLeft']
+                contra_trials = b['contrastLeft'] > b['contrastRight']
+            
+            # Calculate mean response time for each contrast
+            unique_contrasts = np.unique(c_diff)
+            
+            # Initialize arrays for all contrasts
+            mean_times = np.full_like(unique_contrasts, np.nan, dtype=float)
+            sem_times = np.full_like(unique_contrasts, np.nan, dtype=float)
+            mean_times_ipsi = np.full_like(unique_contrasts, np.nan, dtype=float)
+            sem_times_ipsi = np.full_like(unique_contrasts, np.nan, dtype=float)
+            mean_times_contra = np.full_like(unique_contrasts, np.nan, dtype=float)
+            sem_times_contra = np.full_like(unique_contrasts, np.nan, dtype=float)
+            
+            for i, contrast in enumerate(unique_contrasts):
+                # All trials
+                trials = (c_diff == contrast) & good_trials
+                if np.sum(trials) > 0:
+                    times = response_time[trials]
+                    mean_times[i] = np.mean(times)
+                    sem_times[i] = np.std(times, ddof=1) / np.sqrt(len(times))
+                    
+                    # Store times for combined plot
+                    if contrast not in contrast_times:
+                        contrast_times[contrast] = []
+                    contrast_times[contrast].extend(times)
+                
+                # Ipsi trials
+                trials = (c_diff == contrast) & good_trials & ipsi_trials
+                if np.sum(trials) > 0:
+                    times = response_time[trials]
+                    mean_times_ipsi[i] = np.mean(times)
+                    sem_times_ipsi[i] = np.std(times, ddof=1) / np.sqrt(len(times))
+                    
+                    # Store times for combined plot
+                    if contrast not in contrast_times_ipsi:
+                        contrast_times_ipsi[contrast] = []
+                    contrast_times_ipsi[contrast].extend(times)
+                
+                # Contra trials
+                trials = (c_diff == contrast) & good_trials & contra_trials
+                if np.sum(trials) > 0:
+                    times = response_time[trials]
+                    mean_times_contra[i] = np.mean(times)
+                    sem_times_contra[i] = np.std(times, ddof=1) / np.sqrt(len(times))
+                    
+                    # Store times for combined plot
+                    if contrast not in contrast_times_contra:
+                        contrast_times_contra[contrast] = []
+                    contrast_times_contra[contrast].extend(times)
+            
+            # Plot individual session data (all trials)
+            ax1.errorbar(unique_contrasts, mean_times, 
+                        yerr=sem_times,
+                        fmt=f'{markers[ind]}-', label=f'Session {session}', alpha=0.7)
+            
+            # Plot individual session data (ipsi/contra)
+            ax3.errorbar(unique_contrasts, mean_times_ipsi, 
+                        yerr=sem_times_ipsi,
+                        fmt=f'{markers[ind]}-', color='blue', label=f'Session {session} Ipsi', alpha=0.7)
+            ax3.errorbar(unique_contrasts, mean_times_contra, 
+                        yerr=sem_times_contra,
+                        fmt=f'{markers[ind]}-', color='red', label=f'Session {session} Contra', alpha=0.7)
+            
+        except Exception as e:
+            print(f"Error processing session {session}: {str(e)}")
+            continue
+    
+    # Calculate mean and standard error for each contrast
+    contrasts = sorted(set(contrast_times.keys()))
+    contrasts_ipsi_contra = sorted(set(contrast_times_ipsi.keys()) | set(contrast_times_contra.keys()))
+    
+    # Initialize arrays for all contrasts
+    mean_times = np.full_like(contrasts, np.nan, dtype=float)
+    sem_times = np.full_like(contrasts, np.nan, dtype=float)
+    mean_times_ipsi = np.full_like(contrasts_ipsi_contra, np.nan, dtype=float)
+    sem_times_ipsi = np.full_like(contrasts_ipsi_contra, np.nan, dtype=float)
+    mean_times_contra = np.full_like(contrasts_ipsi_contra, np.nan, dtype=float)
+    sem_times_contra = np.full_like(contrasts_ipsi_contra, np.nan, dtype=float)
+    
+    # All trials
+    for i, c in enumerate(contrasts):
+        if contrast_times[c]:
+            mean_times[i] = np.mean(contrast_times[c])
+            sem_times[i] = np.std(contrast_times[c], ddof=1) / np.sqrt(len(contrast_times[c]))
+    
+    # Ipsi/Contra
+    for i, c in enumerate(contrasts_ipsi_contra):
+        if c in contrast_times_ipsi and contrast_times_ipsi[c]:
+            mean_times_ipsi[i] = np.mean(contrast_times_ipsi[c])
+            sem_times_ipsi[i] = np.std(contrast_times_ipsi[c], ddof=1) / np.sqrt(len(contrast_times_ipsi[c]))
+        
+        if c in contrast_times_contra and contrast_times_contra[c]:
+            mean_times_contra[i] = np.mean(contrast_times_contra[c])
+            sem_times_contra[i] = np.std(contrast_times_contra[c], ddof=1) / np.sqrt(len(contrast_times_contra[c]))
+    
+    # Plot combined mean with standard error (all trials)
+    ax2.plot(contrasts, mean_times, 'k-', label='Mean across sessions', linewidth=2)
+    ax2.fill_between(contrasts, 
+                    mean_times - sem_times,
+                    mean_times + sem_times,
+                    alpha=0.2, color='k')
+    
+    # Plot combined mean with standard error (ipsi/contra)
+    ax4.plot(contrasts_ipsi_contra, mean_times_ipsi, 'b-', label='Ipsilateral', linewidth=2)
+    ax4.fill_between(contrasts_ipsi_contra, 
+                    mean_times_ipsi - sem_times_ipsi,
+                    mean_times_ipsi + sem_times_ipsi,
+                    alpha=0.2, color='b')
+    
+    ax4.plot(contrasts_ipsi_contra, mean_times_contra, 'r-', label='Contralateral', linewidth=2)
+    ax4.fill_between(contrasts_ipsi_contra, 
+                    mean_times_contra - sem_times_contra,
+                    mean_times_contra + sem_times_contra,
+                    alpha=0.2, color='r')
+    
+    # Customize plots
+    for ax, title in zip([ax1, ax2, ax3, ax4], 
+                        ['Individual Sessions', 'Combined Mean', 
+                         'Individual Sessions (Ipsi/Contra)', 'Combined Mean (Ipsi/Contra)']):
+        ax.set_xlabel('Contrast')
+        ax.set_ylabel('Response Time (s)')
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+        if ax.get_legend_handles_labels()[0]:  # Only add legend if there are labels
+            ax.legend()
+        ax.set_xlim([-1, 1])
+        ax.axvline(x=0, color='k', linestyle='--', alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+  
+def update_bias_data(new_id, new_bias):
+    """
+    Updates the JSON file with new IDs and their biases.
+    
+    Args:
+        new_id: String with the new ID (e.g., "MBL015")
+        new_bias: String with the bias ("Left" or "Right")
+    """
+
+    import json
+    import os
+    # JSON file path
+    analysis_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'analysis')
+    json_path = os.path.join(analysis_path, 'bias_data.json')
+    
+    # Load existing data if file exists
+    if os.path.exists(json_path):
+        with open(json_path, 'r') as f:
+            existing_data = json.load(f)
+    else:
+        existing_data = {}
+    
+    # Update with new ID and bias
+    existing_data[new_id] = new_bias
+    
+    # Save updated data
+    with open(json_path, 'w') as f:
+        json.dump(existing_data, f, indent=4)

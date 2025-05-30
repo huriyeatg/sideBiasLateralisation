@@ -968,3 +968,351 @@ class LoadMat():
                 dict_[strg] = elem
         return dict_
 
+import os
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import glob
+import scipy.io as sio
+import platform
+
+class local_analysis:
+    def __init__(self, data_path):
+        """
+        Inicializa el análisis con datos locales.
+        
+        Args:
+            data_path (str): Ruta al directorio que contiene los archivos PAQ y TIFF
+        """
+        # Configurar rutas según el sistema
+        if platform.node() == 'WIN-AL012':
+            print("Computer: Candela Windows")
+            self.suite2pOutputPath = data_path
+            self.recordingListPath = data_path
+            self.rawPath = data_path
+            self.rootPath = data_path
+        else:
+            print('Computer setting is not set.')
+            self.suite2pOutputPath = 'N/A'
+            self.recordingListPath = data_path
+            self.rawPath = data_path
+            self.rootPath = data_path
+
+        self.analysisPath = os.path.join(self.rootPath, 'analysis')
+        self.figsPath = os.path.join(self.rootPath, 'figs')
+        self.data_path = data_path
+        self.recordingList = self._create_recording_list()
+        
+    def _create_recording_list(self):
+        """
+        Crea una lista de grabaciones basada en los archivos PAQ, TIFF, Block.mat y Timeline.mat encontrados.
+        """
+        # Encontrar todos los archivos PAQ en el directorio TwoP
+        twoP_path = os.path.join(self.data_path, 'TwoP')
+        paq_files = glob.glob(os.path.join(twoP_path, "*.paq"))
+        
+        # Crear DataFrame para almacenar la información
+        records = []
+        
+        for paq_file in paq_files:
+            # Extraer información del nombre del archivo
+            base_name = os.path.basename(paq_file)
+            parts = base_name.split('_')
+            
+            if len(parts) >= 3:
+                recording_date = parts[0]
+                animal_id = parts[1]
+                recording_id = parts[2].split('_')[0]  # Eliminar '_paq' y extensión
+                
+                # Crear el nombre de la sesión
+                session_name = f"{recording_date}_{recording_id}_{animal_id}"
+                
+                # Buscar archivo TIFF correspondiente
+                tiff_pattern = f"{recording_date}_t-*_Cycle*_Ch2.tif"
+                tiff_files = glob.glob(os.path.join(twoP_path, "**", tiff_pattern), recursive=True)
+                
+                # Buscar archivo Block.mat
+                block_pattern = f"{recording_date}_{recording_id}_{animal_id}_Block.mat"
+                block_files = glob.glob(os.path.join(self.data_path, block_pattern))
+                
+                # Buscar archivo Timeline.mat
+                timeline_pattern = f"{recording_date}_{recording_id}_{animal_id}_Timeline.mat"
+                timeline_files = glob.glob(os.path.join(self.data_path, timeline_pattern))
+                
+                # Cargar datos del Block.mat si existe
+                block_data = None
+                if block_files:
+                    try:
+                        block_data = sio.loadmat(block_files[0])
+                    except Exception as e:
+                        print(f"Error al cargar Block.mat: {e}")
+                
+                # Cargar datos del Timeline.mat si existe
+                timeline_data = None
+                if timeline_files:
+                    try:
+                        timeline_data = sio.loadmat(timeline_files[0])
+                    except Exception as e:
+                        print(f"Error al cargar Timeline.mat: {e}")
+                
+                # Determinar si es una sesión de aprendizaje
+                date = datetime.strptime(recording_date, '%Y-%m-%d')
+                learning = False  # Por defecto, no es una sesión de aprendizaje
+                
+                record = {
+                    'recordingDate': recording_date,
+                    'animalID': animal_id,
+                    'recordingID': recording_id,
+                    'sessionName': session_name,
+                    'learningData': learning,
+                    'path': self.data_path,
+                    'twoP': len(tiff_files) > 0,  # True si existe archivo TIFF
+                    'paqFileName': paq_file,
+                    'imagingTiffFileNames': tiff_files[0] if tiff_files else None,
+                    'blockData': block_data,
+                    'timelineData': timeline_data,
+                    'hasBlock': len(block_files) > 0,
+                    'hasTimeline': len(timeline_files) > 0,
+                    'sessionNameWithPath': os.path.join(self.data_path, f"{session_name}_Block.mat"),
+                    'eventTimesExtracted': 0,  # Inicializar como 0
+                    'eventTimesPath': '',  # Inicializar como string vacío
+                    'variance': np.nan  # Inicializar como NaN
+                }
+                records.append(record)
+        
+        # Crear DataFrame
+        df = pd.DataFrame(records)
+        
+        # Ordenar por fecha y animal
+        if not df.empty:
+            df = df.sort_values(['recordingDate', 'animalID'])
+            
+            # Añadir rutas de análisis
+            df['analysispathname'] = np.nan
+            df['filepathname'] = np.nan
+            
+            for ind, recordingDate in enumerate(df.recordingDate):
+                # Crear la ruta del archivo
+                filepathname = os.path.join(df.path[ind], df.recordingID[ind])
+                df.loc[ind, 'filepathname'] = filepathname
+                
+                # Crear la ruta de análisis
+                analysispathname = os.path.join(
+                    self.analysisPath,
+                    f"{df.recordingDate[ind]}_{df.animalID[ind]}_{df.recordingID[ind]}"
+                )
+                df.loc[ind, 'analysispathname'] = analysispathname + '\\'
+                
+                # Crear el directorio de análisis si no existe
+                if not os.path.exists(analysispathname):
+                    os.makedirs(analysispathname)
+                
+                # Inicializar la ruta del archivo CSV de eventos
+                df.loc[ind, 'eventTimesPath'] = os.path.join(
+                    analysispathname,
+                    f"{df.sessionName[ind]}_CorrectedeventTimes.csv"
+                )
+        
+        return df
+
+def get_info(data_path="C:\\Users\\Lak Lab\\Documents\\paqtif\\2025-05-20"):
+    """
+    Función auxiliar para obtener el objeto info.
+    
+    Args:
+        data_path (str): Ruta al directorio que contiene los archivos PAQ y TIFF
+        
+    Returns:
+        local_analysis: Objeto con la información de las grabaciones
+    """
+    return local_analysis(data_path) 
+
+import tifffile
+import numpy as np
+import os
+from paq2py import paq_read
+
+def get_tiff_frames(tiff_path):
+    """
+    Efficiently gets the number of frames from a TIFF file.
+    """
+    with tifffile.TiffFile(tiff_path) as tif:
+        # Try to get the number of frames from ImageDescription first
+        try:
+            desc = tif.pages[0].tags['ImageDescription'].value
+            import re
+            # Look for the pattern [n,] in the description
+            n_frames = re.search(r'\[(\d+),', desc)
+            if n_frames:
+                return int(n_frames.group(1))
+        except:
+            pass
+        
+        # If we can't get it from ImageDescription, count the pages
+        return len(tif.pages)
+
+def show_paq_info(paq_path):
+    """
+    Shows the information contained in a PAQ file.
+    
+    Args:
+        paq_path (str): Path to the PAQ file
+    """
+    print(f"Reading PAQ file: {paq_path}")
+    paq_data = paq_read(paq_path, plot=False)
+    
+    print("\nPAQ file information:")
+    print(f"Sampling rate: {paq_data['rate']} Hz")
+    print(f"Number of frames: {paq_data['data'].shape[1]}")
+    print(f"Number of channels: {len(paq_data['chan_names'])}")
+    
+    print("\nAvailable channels:")
+    for i, (chan_name, unit) in enumerate(zip(paq_data['chan_names'], paq_data['units'])):
+        print(f"{i+1}. {chan_name} ({unit})")
+    
+    print("\nHardware lines:")
+    for hw_chan in paq_data['hw_chans']:
+        print(f"- {hw_chan}")
+    
+    # Show basic statistics for each channel
+    print("\nChannel statistics:")
+    for i, chan_name in enumerate(paq_data['chan_names']):
+        data = paq_data['data'][i]
+        print(f"\n{chan_name}:")
+        print(f"  Minimum: {np.min(data):.2f}")
+        print(f"  Maximum: {np.max(data):.2f}")
+        print(f"  Mean: {np.mean(data):.2f}")
+        print(f"  Standard deviation: {np.std(data):.2f}")
+
+def adjust_paq_to_tiff(tiff_path, paq_path, output_paq_path=None):
+    """
+    Adjusts the PAQ file to match the number of frames in the TIFF file,
+    based on the number of frames in the 2P channel.
+    
+    Args:
+        tiff_path (str): Path to the TIFF file
+        paq_path (str): Path to the original PAQ file
+        output_paq_path (str, optional): Path where to save the new PAQ file.
+                                       If not specified, uses the original name with '_adjusted' added.
+    
+    Returns:
+        str: Path to the newly created PAQ file
+    """
+    print("Getting number of frames from TIFF...")
+    tiff_frames = get_tiff_frames(tiff_path)
+    print(f"Number of frames in TIFF file: {tiff_frames}")
+    
+    # Check if the number of frames seems reasonable
+    if tiff_frames < 1000:  # A 20GB file should have many more frames
+        print("WARNING: The detected number of frames seems very low for a 20GB file.")
+        print("Trying alternative method...")
+        with tifffile.TiffFile(tiff_path) as tif:
+            # Print diagnostic information
+            print("\nTIFF file information:")
+            print(f"File size: {os.path.getsize(tiff_path) / (1024**3):.2f} GB")
+            print(f"Number of pages: {len(tif.pages)}")
+            print("First page metadata:")
+            for tag in tif.pages[0].tags.values():
+                print(f"  {tag.name}: {tag.value}")
+            
+            # Use number of pages as number of frames
+            tiff_frames = len(tif.pages)
+            print(f"\nUsing number of pages as number of frames: {tiff_frames}")
+    
+    print("Reading PAQ file...")
+    paq_data = paq_read(paq_path, plot=False)
+    
+    # Get number of frames in PAQ
+    paq_frames = paq_data["data"].shape[1]
+    print(f"Number of frames in original PAQ file: {paq_frames}")
+    
+    # Find the index of the 2P channel
+    try:
+        idx_2p = paq_data["chan_names"].index("2p_frame")
+    except ValueError:
+        print("Error: Channel '2p_frame' not found in PAQ file")
+        return paq_path
+    
+    # Count 2P channel frames
+    threshold_volts = 2.5
+    frame_count_2p = np.flatnonzero(
+        (paq_data["data"][idx_2p][:-1] < threshold_volts) & 
+        (paq_data["data"][idx_2p][1:] > threshold_volts)
+    ) + 1
+    
+    print(f"Number of frames detected in 2P channel: {len(frame_count_2p)}")
+    
+    if len(frame_count_2p) <= tiff_frames:
+        print("PAQ file does not need to be trimmed.")
+        return paq_path
+    
+    # Find the index of the last frame we need
+    last_frame_idx = frame_count_2p[tiff_frames - 1]
+    print(f"Index of last frame to keep: {last_frame_idx}")
+    
+    print("Trimming PAQ data...")
+    # Trim PAQ data to the calculated number of frames
+    adjusted_data = paq_data["data"][:, :last_frame_idx]
+    
+    # Create new PAQ file
+    if output_paq_path is None:
+        base, ext = os.path.splitext(paq_path)
+        output_paq_path = f"{base}_adjusted{ext}"
+    
+    print(f"Creating new PAQ file: {output_paq_path}")
+    # Write the new PAQ file
+    with open(output_paq_path, 'wb') as f:
+        # Write sampling rate
+        np.array(paq_data["rate"], dtype='>f').tofile(f)
+        
+        # Write number of channels
+        np.array(len(paq_data["chan_names"]), dtype='>f').tofile(f)
+        
+        # Write channel names
+        for chan_name in paq_data["chan_names"]:
+            np.array(len(chan_name), dtype='>f').tofile(f)
+            for char in chan_name:
+                np.array(ord(char), dtype='>f').tofile(f)
+        
+        # Write hardware lines
+        for hw_chan in paq_data["hw_chans"]:
+            np.array(len(hw_chan), dtype='>f').tofile(f)
+            for char in hw_chan:
+                np.array(ord(char), dtype='>f').tofile(f)
+        
+        # Write units
+        for unit in paq_data["units"]:
+            np.array(len(unit), dtype='>f').tofile(f)
+            for char in unit:
+                np.array(ord(char), dtype='>f').tofile(f)
+        
+        # Write adjusted data
+        adjusted_data.transpose().astype('>f').tofile(f)
+    
+    print(f"New PAQ file created with {last_frame_idx} frames: {output_paq_path}")
+    return output_paq_path
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+    
+    parser = argparse.ArgumentParser(description='Adjusts a PAQ file to match the number of frames in a TIFF file')
+    parser.add_argument('--info', action='store_true', help='Show PAQ file information')
+    parser.add_argument('path1', nargs='?', help='Path to TIFF or PAQ file (depending on mode)')
+    parser.add_argument('path2', nargs='?', help='Path to PAQ file (only in adjustment mode)')
+    parser.add_argument('--output', help='Path to save the new PAQ file (optional)')
+    
+    args = parser.parse_args()
+    
+    if args.info:
+        if not args.path1:
+            print("Error: PAQ file path required when using --info")
+            parser.print_help()
+            sys.exit(1)
+        show_paq_info(args.path1)
+    else:
+        if not args.path1 or not args.path2:
+            print("Error: Both TIFF and PAQ file paths are required")
+            parser.print_help()
+            sys.exit(1)
+        adjust_paq_to_tiff(args.path1, args.path2, args.output) 

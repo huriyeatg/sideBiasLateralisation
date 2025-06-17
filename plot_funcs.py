@@ -142,10 +142,11 @@ def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
     fRate = 1000/30
     pre_frames    = 2000.0# in ms
     pre_frames    = int(np.ceil(pre_frames/fRate))
+    post_frames   = 6000.0 # in ms
+    post_frames   = int(np.ceil(post_frames/fRate))
     analysisWindowDur = 500 # in ms
     analysisWindowDur = int(np.ceil(analysisWindowDur/fRate))
-
-    sessionsData ={}
+    sessionsData = [None] * len(analysis_params)
 
     for indx, params in enumerate(analysis_params) :
         array = dffTrace_mean[params]
@@ -177,9 +178,16 @@ def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
                 if selectedSession == 'WithinSession':
                     sortedInd = np.array(np.nanmean(plot_data[:, pre_frames:(pre_frames + analysisWindowDur)], axis=1)).argsort()[::-1]
                 else:
-                    sortedInd = np.array(np.nanmean(sessionsData[selectedSession][:, pre_frames:(pre_frames + analysisWindowDur)], axis=1)).argsort()[::-1]
+                    # Asegurarse de que el índice seleccionado existe
+                    if selectedSession < len(sessionsData) and sessionsData[selectedSession] is not None:
+                        sortedInd = np.array(np.nanmean(sessionsData[selectedSession][:, pre_frames:(pre_frames + analysisWindowDur)], axis=1)).argsort()[::-1]
+                    else:
+                        sortedInd = np.array(np.nanmean(plot_data[:, pre_frames:(pre_frames + analysisWindowDur)], axis=1)).argsort()[::-1]
 
+                # Asegurarse de que los índices están dentro de los límites
+                sortedInd = sortedInd[sortedInd < plot_data.shape[0]]
                 plot_data = plot_data[sortedInd]
+                
                 x_labels = np.linspace(-2, 6, plot_data.shape[1], dtype = int)
                 xticks = np.arange(0, len(x_labels), step)
                 xticklabels = x_labels[::step]
@@ -199,8 +207,8 @@ def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
         cax = axes[-1].inset_axes([0.2, 0.2, 0.6, 0.6])
         sns.heatmap(np.zeros((1, 1)), ax=cax, cbar=True, cbar_ax=axes[-1], cmap=colormap, cbar_kws={'label': 'DFF','shrink': 0.5})
         axes[0].set_ylabel('Cells')
-        save_figure(savefigname,savefigpath) 
-        
+        save_figure(savefigname,savefigpath)
+
 def histogram_sessions(dffTrace_mean,analysis_params,colormap, zscoreRun, savefigname, savefigpath ) :
     
     ## Parameters
@@ -341,7 +349,7 @@ def scatter_sessions(dffTrace_mean1, dffTrace_mean2, analysis_params,
 
     save_figureAll(savefigname,savefigpath)
 
-def plot_combined_psychometric(info):
+def plot_combined_psychometric(info, save_path=None):
     """
     Creates two plots:
     1. Individual right turn probability vs contrast for each session
@@ -349,6 +357,7 @@ def plot_combined_psychometric(info):
     
     Args:
         info: Info object containing recordingList with session information
+        save_path: Path where to save the figure. If None, uses default path
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -455,8 +464,26 @@ def plot_combined_psychometric(info):
     
     plt.tight_layout()
 
+    # Set default save path if none provided
+    if save_path is None:
+        save_path = r"C:\Users\Lak Lab\Documents\Github\sideBiasLateralisation\analysis\figs"
+    
+    # Create directory if it doesn't exist
+    os.makedirs(save_path, exist_ok=True)
+    
+    # Get animal ID from first session
+    animal_id = info.recordingList.animalID[0]
+    
+    # Create filename with animal ID
+    full_save_path = os.path.join(save_path, f'{animal_id}_combined_psychometric.png')
+    
+    plt.savefig(full_save_path)
+    plt.close()
+    
+    print(f"Figure saved at: {full_save_path}")
 
-def plot_combined_response_time(info, analysis_path):
+
+def plot_combined_response_time(info, analysis_path, save_path=None):
     """
     Creates four plots:
     1. Individual response time vs contrast for each session
@@ -467,6 +494,7 @@ def plot_combined_response_time(info, analysis_path):
     Args:
         info: Info object containing recordingList with session information
         analysis_path: String with the path to the analysis folder
+        save_path: Path where to save the figure. If None, uses default path
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -656,34 +684,298 @@ def plot_combined_response_time(info, analysis_path):
         ax.axvline(x=0, color='k', linestyle='--', alpha=0.3)
     
     plt.tight_layout()
-    plt.show()
+    
+    # Set default save path if none provided
+    if save_path is None:
+        save_path = r"C:\Users\Lak Lab\Documents\Github\sideBiasLateralisation\analysis\figs"
+    
+    # Create directory if it doesn't exist
+    os.makedirs(save_path, exist_ok=True)
+    
+    # Get animal ID from first session
+    animal_id = info.recordingList.animalID[0]
+    
+    # Create filename with animal ID
+    full_save_path = os.path.join(save_path, f'{animal_id}_combined_response_time.png')
+    
+    plt.savefig(full_save_path)
+    plt.close()
+    
+    print(f"Figure saved at: {full_save_path}")
 
-  
-def update_bias_data(new_id, new_bias):
+
+
+def plot_combined_dff_mean_by_contrast(info, zscoreRun=True, use_responsive_only=True, save_path=None):
     """
-    Updates the JSON file with new IDs and their biases.
+    Creates a combined plot of dff mean by contrast across multiple sessions.
     
     Args:
-        new_id: String with the new ID (e.g., "MBL015")
-        new_bias: String with the bias ("Left" or "Right")
+        info: Info object containing recordingList with session information
+        zscoreRun: If True, uses z-scored data from imaging-dff_mean_zscored.pkl, 
+                  if False, uses raw data from imaging-dff_mean.pkl
+        use_responsive_only: If True, uses data from responsive_neurons folder,
+                           if False, uses data from all_neurons folder
+        save_path: Path where to save the figure. If None, uses default path
     """
-
-    import json
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import pickle
     import os
-    # JSON file path
-    analysis_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'analysis')
-    json_path = os.path.join(analysis_path, 'bias_data.json')
+    import seaborn as sns
+    from scipy import stats
     
-    # Load existing data if file exists
-    if os.path.exists(json_path):
-        with open(json_path, 'r') as f:
-            existing_data = json.load(f)
-    else:
-        existing_data = {}
+    # Set up the figure
+    sns.set(style="whitegrid", font_scale=1.2)
+    plt.figure(figsize=(18, 5))
     
-    # Update with new ID and bias
-    existing_data[new_id] = new_bias
+    # Define contrasts
+    contrasts = [-0.5, -0.25, -0.125, -0.0625, 0, 0.0625, 0.125, 0.25, 0.5]
+    contrast_labels = [str(c) for c in contrasts]
     
-    # Save updated data
-    with open(json_path, 'w') as f:
-        json.dump(existing_data, f, indent=4)
+    # Dictionary to store data for each type (stimuli, choice, reward)
+    all_data = {
+        'Stimulus Response': [],
+        'Choice Response': [],
+        'Reward Response': []
+    }
+    
+    # For each session in recordingList
+    for ind in range(len(info.recordingList)):
+        try:
+            session = info.recordingList.sessionName[ind]
+            print(f"\nProcessing session: {session}")
+            
+            # Determine subfolder based on use_responsive_only
+            subfolder = 'responsive_neurons' if use_responsive_only else 'all_neurons'
+            
+            # Build pickle file path based on zscoreRun
+            if zscoreRun:
+                pickle_path = os.path.join(info.recordingList.analysispathname[ind], 
+                                         subfolder,
+                                         'imaging-dff_mean_zscored.pkl')
+            else:
+                pickle_path = os.path.join(info.recordingList.analysispathname[ind], 
+                                         subfolder,
+                                         'imaging-dff_mean.pkl')
+            
+            # Check if file exists
+            if not os.path.exists(pickle_path):
+                print(f"Pickle file not found at: {pickle_path}")
+                continue
+            
+            # Read pickle file
+            with open(pickle_path, 'rb') as f:
+                dff_mean_reward, dff_mean_stimuli, dff_mean_choice = pickle.load(f)
+            
+            # Helper to get data for each contrast
+            def get_data(dff_dict):
+                data = []
+                for contrast in contrasts:
+                    if contrast == 0:
+                        condition = 'zero contrast'
+                    elif contrast < 0:
+                        condition = f'contra {abs(contrast)}'
+                    else:
+                        condition = f'ipsi {contrast}'
+                    if condition in dff_dict and dff_dict[condition] is not None:
+                        for val in dff_dict[condition]:
+                            data.append({'contrast': contrast, 'value': val})
+                return pd.DataFrame(data)
+            
+            # Process each type
+            for title, dff_dict in zip(
+                ['Stimulus Response', 'Choice Response', 'Reward Response'],
+                [dff_mean_stimuli, dff_mean_choice, dff_mean_reward]
+            ):
+                df = get_data(dff_dict)
+                if not df.empty:
+                    all_data[title].append(df)
+            
+        except Exception as e:
+            print(f"Error processing session {session}: {str(e)}")
+            continue
+    
+    # Plot for each type
+    for i, (title, session_data) in enumerate(all_data.items()):
+        plt.subplot(1, 3, i+1)
+        
+        if session_data:  # If we have data for this type
+            # Combine all sessions
+            combined_df = pd.concat(session_data, ignore_index=True)
+            
+            # Plot
+            sns.stripplot(x='contrast', y='value', data=combined_df, 
+                         order=contrasts, color='gray', size=4, alpha=0.6, jitter=True)
+            sns.pointplot(
+                x='contrast', y='value', data=combined_df, order=contrasts,
+                color='royalblue', capsize=0.15, err_kws={'linewidth': 2},
+                markers='o', linestyles='-'
+            )
+            
+            plt.axvline(x=4, color='gray', linestyle='--', alpha=0.5)  # x=4 is contrast==0
+            plt.xlabel('Total Contrast')
+            plt.ylabel('Mean Activity (z-score)' if zscoreRun else 'Mean Activity')
+            plt.title(title)
+            plt.xticks(ticks=range(len(contrasts)), labels=contrast_labels, rotation=45)
+            
+            # Set y-axis limits based on all data
+            min_y = combined_df['value'].min() - 0.05
+            max_y = combined_df['value'].max() + 0.05
+            plt.ylim(min_y, max_y)
+    
+    plt.tight_layout()
+    
+    # Set default save path if none provided
+    if save_path is None:
+        save_path = r"C:\Users\Lak Lab\Documents\Github\sideBiasLateralisation\analysis\figs"
+    
+    # Create directory if it doesn't exist
+    os.makedirs(save_path, exist_ok=True)
+    
+    # Get animal ID from first session
+    animal_id = info.recordingList.animalID[0]
+    
+    # Create filename with animal ID, data type and neuron type
+    data_type = 'zscored' if zscoreRun else 'raw'
+    neuron_type = 'responsive' if use_responsive_only else 'all'
+    full_save_path = os.path.join(save_path, 
+                                 f'{animal_id}_combined_dff_mean_by_contrast_{neuron_type}_{data_type}.png')
+    
+    plt.savefig(full_save_path)
+    plt.close()
+    
+    print(f"Figure saved at: {full_save_path}")
+
+def plot_combined_neural_activity(info, analysis_params, colormap='Set2', duration=[3], zscoreRun=True, 
+                                save_path=None, use_responsive_only=True):
+    """
+    Creates a combined plot of average neural activity across multiple sessions.
+    
+    Args:
+        info: Info object containing recordingList with session information
+        analysis_params: List of parameters to analyze (e.g., ['Rewarded', 'Unrewarded'])
+        colormap: Color map for the plot
+        duration: Analysis duration in seconds
+        zscoreRun: If True, uses z-scored data from imaging-dffTrace_mean_zscored.pkl, 
+                  if False, uses raw data from imaging-dffTrace_mean.pkl
+        save_path: Path where to save the figure. If None, uses default path
+        use_responsive_only: If True, uses data from responsive_neurons folder,
+                           if False, uses data from all_neurons folder
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import pickle
+    import os
+    import seaborn as sns
+    from scipy import stats
+    
+    # Create figure
+    plt.figure(figsize=(15, 6))
+    
+    # Dictionary to store data for each condition
+    condition_data = {param: [] for param in analysis_params}
+    
+    # For each session in recordingList
+    for ind in range(len(info.recordingList)):
+        try:
+            session = info.recordingList.sessionName[ind]
+            print(f"\nProcessing session: {session}")
+            
+            # Determine subfolder based on use_responsive_only
+            subfolder = 'responsive_neurons' if use_responsive_only else 'all_neurons'
+            
+            # Build pickle file path based on zscoreRun and use_responsive_only
+            if zscoreRun:
+                pickle_path = os.path.join(info.recordingList.analysispathname[ind], 
+                                         subfolder,
+                                         'imaging-dffTrace_mean_zscored.pkl')
+            else:
+                pickle_path = os.path.join(info.recordingList.analysispathname[ind], 
+                                         subfolder,
+                                         'imaging-dffTrace_mean.pkl')
+            
+            # Check if file exists
+            if not os.path.exists(pickle_path):
+                print(f"Pickle file not found at: {pickle_path}")
+                continue
+            
+            # Read pickle file
+            with open(pickle_path, 'rb') as f:
+                dffTrace_mean_reward, dffTrace_mean_stimuli, dffTrace_mean_choice = pickle.load(f)
+            
+            # Select data type based on analysis parameters
+            if any(param in ['Rewarded', 'Unrewarded'] for param in analysis_params):
+                dffTrace_mean = dffTrace_mean_reward
+            elif any(param in ['Left choices', 'Right choices'] for param in analysis_params):
+                dffTrace_mean = dffTrace_mean_choice
+            else:
+                dffTrace_mean = dffTrace_mean_stimuli
+            
+            # Process each parameter
+            for param in analysis_params:
+                if param in dffTrace_mean and dffTrace_mean[param] is not None:
+                    # Calculate cell average
+                    mean_activity = np.mean(dffTrace_mean[param], axis=0)
+                    condition_data[param].append(mean_activity)
+            
+        except Exception as e:
+            print(f"Error processing session {session}: {str(e)}")
+            continue
+    
+    # Calculate mean and standard error for each condition
+    colors = sns.color_palette(colormap, len(analysis_params))
+    
+    for idx, param in enumerate(analysis_params):
+        if condition_data[param]:
+            # Convert to numpy array
+            all_sessions = np.array(condition_data[param])
+            
+            # Calculate mean and standard error
+            mean_activity = np.mean(all_sessions, axis=0)
+            sem_activity = np.std(all_sessions, axis=0) / np.sqrt(len(all_sessions))
+            
+            # Create x axis
+            x = np.linspace(-2, 6, len(mean_activity))
+            
+            # Plot
+            plt.plot(x, mean_activity, color=colors[idx], label=param, linewidth=2)
+            plt.fill_between(x, 
+                           mean_activity - sem_activity,
+                           mean_activity + sem_activity,
+                           color=colors[idx], alpha=0.2)
+    
+    # Customize plot
+    plt.axvline(x=0, color='k', linestyle='--', alpha=0.3)
+    plt.xlabel('Time (s)')
+    plt.ylabel('DFF (z-score)' if zscoreRun else 'DFF')
+    plt.title('Combined Average Neural Activity')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    # Adjust x-axis limits
+    yaxis_length = int(duration[0]) * 30
+    plt.xlim(-2, 6)
+    
+    plt.tight_layout()
+    
+    # Set default save path if none provided
+    if save_path is None:
+        save_path = r"C:\Users\Lak Lab\Documents\Github\sideBiasLateralisation\analysis\figs"
+    
+    # Create directory if it doesn't exist
+    os.makedirs(save_path, exist_ok=True)
+    
+    # Get animal ID from first session
+    animal_id = info.recordingList.animalID[0]
+    
+    # Create filename with animal ID, data type and neuron type
+    data_type = 'zscored' if zscoreRun else 'raw'
+    neuron_type = 'responsive' if use_responsive_only else 'all'
+    full_save_path = os.path.join(save_path, 
+                                 f'{animal_id}_combined_neural_activity_{neuron_type}_{data_type}_{duration[0]}sec.png')
+    plt.savefig(full_save_path)
+    plt.close()
+    
+    print(f"Figure saved at: {full_save_path}")

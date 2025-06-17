@@ -14,6 +14,7 @@ import copy
 from scipy import stats
 import scipy.io as spio
 from scipy import signal
+import pickle
 
 # global plotting params
 params = {'legend.fontsize': 'x-large',
@@ -1316,3 +1317,304 @@ if __name__ == "__main__":
             parser.print_help()
             sys.exit(1)
         adjust_paq_to_tiff(args.path1, args.path2, args.output) 
+
+
+def update_json_data(file_name, new_data, analysis_path=None):
+    """
+    Updates a JSON file with new data, checking for existing entries.
+    
+    Args:
+        file_name: String with the JSON file name (e.g., "bias_data.json")
+        new_data: Dictionary with the new data to add/update
+        analysis_path: Optional string with the path to the analysis directory. 
+                      If None, uses the default 'analysis' directory.
+    
+    Returns:
+        bool: True if the update was successful, False if there was an error
+    """
+    import json
+    import os
+    
+    try:
+        # Determine JSON file path
+        if analysis_path is None:
+            analysis_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'analysis')
+        json_path = os.path.join(analysis_path, file_name)
+        
+        # Load existing data if file exists
+        if os.path.exists(json_path):
+            with open(json_path, 'r') as f:
+                existing_data = json.load(f)
+        else:
+            existing_data = {}
+        
+        # Check for existing entries
+        existing_entries = []
+        for key in new_data:
+            if key in existing_data:
+                if existing_data[key] == new_data[key]:
+                    print(f"Warning: Entry '{key}' already exists with the same value '{new_data[key]}'")
+                else:
+                    print(f"Warning: Entry '{key}' exists with different value. Old: '{existing_data[key]}', New: '{new_data[key]}'")
+                existing_entries.append(key)
+        
+        # Ask for confirmation if there are existing entries
+        if existing_entries:
+            response = input("Do you want to update the existing entries? (y/n): ")
+            if response.lower() != 'y':
+                print("Update cancelled")
+                return False
+        
+        # Update with new data
+        existing_data.update(new_data)
+        
+        # Save updated data
+        with open(json_path, 'w') as f:
+            json.dump(existing_data, f, indent=4)
+            
+        print(f'File {file_name} successfully updated')
+        return True
+        
+    except Exception as e:
+        print(f'Error updating {file_name}: {str(e)}')
+        return False
+    
+def add_ipsi_contra_columns(info, analysis_path):
+    """
+    Adds two new columns to the CSV files:
+    1. ipsi_contra_bias: based on comparison between correctResponse and bias from bias_data.json
+    2. ipsi_contra_recside: based on comparison between correctResponse and recording side from recside_data.json
+    
+    Args:
+        info: Info object with recordingList
+        analysis_path: String with the path to the analysis folder
+    """
+    import pandas as pd
+    import json
+    import os
+    import glob
+    
+    # Load bias and recording side data
+    bias_json_path = os.path.join(analysis_path, 'bias_data.json')
+    recside_json_path = os.path.join(analysis_path, 'recside_data.json')
+    
+    with open(bias_json_path, 'r') as f:
+        bias_data = json.load(f)
+    with open(recside_json_path, 'r') as f:
+        recside_data = json.load(f)
+    
+    # Process each session
+    for ind, recordingDate in enumerate(info.recordingList.recordingDate):
+        try:
+            # Get CSV file path
+            filenameCSV = info.recordingList.analysispathname[ind] + info.recordingList.sessionName[ind] + '_CorrectedeventTimes.csv'
+            e_filenameCSV = [f for f in glob.glob(filenameCSV)]
+            
+            if len(e_filenameCSV) == 1:
+                # Read CSV
+                df = pd.read_csv(e_filenameCSV[0])
+                
+                # Get animal ID and session name
+                animal_id = info.recordingList.sessionName[ind].split('_')[-1]
+                session_name = info.recordingList.sessionName[ind]
+                
+                # Get bias and recording side
+                animal_bias = bias_data.get(animal_id)
+                session_side = recside_data.get(session_name)
+                
+                if animal_bias is None:
+                    print(f"Warning: No bias data found for {animal_id}")
+                    continue
+                    
+                if session_side is None:
+                    print(f"Warning: No recording side data found for {session_name}")
+                    continue
+                
+                # Add ipsi/contra columns based on bias
+                df['ipsi_contra_bias'] = 'contra'  # default value
+                if animal_bias == 'Left':
+                    df.loc[df['correctResponse'] == 'Left', 'ipsi_contra_bias'] = 'ipsi'
+                else:  # animal_bias == 'Right'
+                    df.loc[df['correctResponse'] == 'Right', 'ipsi_contra_bias'] = 'ipsi'
+                
+                # Add ipsi/contra columns based on recording side
+                df['ipsi_contra_recside'] = 'contra'  # default value
+                if session_side == 'Left':
+                    df.loc[df['correctResponse'] == 'Left', 'ipsi_contra_recside'] = 'ipsi'
+                else:  # session_side == 'Right'
+                    df.loc[df['correctResponse'] == 'Right', 'ipsi_contra_recside'] = 'ipsi'
+                
+                # Save updated CSV
+                df.to_csv(e_filenameCSV[0], index=False)
+                print(f"Updated CSV for session {session_name}")
+                
+        except Exception as e:
+            print(f"Error processing session {ind}: {str(e)}")
+            continue
+
+def process_large_tiff_max_projections(tiff_path, frames_per_group=10000):
+    """
+    Process a large TIFF file and display maximum projections every N frames.
+    
+    Args:
+        tiff_path (str): Path to the large TIFF file
+        frames_per_group (int): Number of frames to group for each maximum projection
+    """
+    import tifffile
+    import numpy as np
+    from tqdm import tqdm
+    import matplotlib.pyplot as plt
+    
+    # Get TIFF file information
+    with tifffile.TiffFile(tiff_path) as tif:
+        total_frames = len(tif.pages)
+        print(f"Total frames in file: {total_frames}")
+        
+        # Calculate number of groups
+        n_groups = total_frames // frames_per_group
+        if total_frames % frames_per_group != 0:
+            n_groups += 1
+        
+        # Process each group
+        for group_idx in tqdm(range(n_groups), desc="Processing groups"):
+            start_frame = group_idx * frames_per_group
+            end_frame = min((group_idx + 1) * frames_per_group, total_frames)
+            
+            # Read frames from current group
+            frames = []
+            for frame_idx in range(start_frame, end_frame):
+                frame = tif.pages[frame_idx].asarray()
+                frames.append(frame)
+            
+            # Convert to numpy array and calculate maximum projection
+            frames_array = np.stack(frames)
+            max_proj = np.max(frames_array, axis=0)
+            
+            # Display maximum projection
+            plt.figure(figsize=(10, 10))
+            plt.imshow(max_proj, cmap='gray')
+            plt.title(f'Maximum projection group {group_idx+1}/{n_groups}')
+            plt.colorbar()
+            plt.show()
+            
+            # Free memory
+            del frames
+            del frames_array
+            del max_proj
+    
+    print(f"Processing completed. {n_groups} maximum projections displayed.")
+
+def filter_responsive_neurons(dff_traces, pre_frames, post_frames, significance_level=0.05):
+    from scipy import stats
+    
+    # Convert frames to seconds (assuming 30 fps)
+    fps = 30
+    pre_sec = 1  # 1 second before
+    post_sec = 2  # 2 seconds after
+    
+    pre_window = int(pre_sec * fps)
+    post_window = int(post_sec * fps)
+    
+    responsive_neurons = {}
+    
+    for condition, traces in dff_traces.items():
+        if traces is None:
+            responsive_neurons[condition] = None
+            continue
+            
+        n_neurons = traces.shape[0]
+        responsive = np.zeros(n_neurons, dtype=bool)
+        
+        for neuron in range(n_neurons):
+            # Pre-event activity
+            pre_activity = traces[neuron, pre_frames-pre_window:pre_frames]
+            # Post-event activity
+            post_activity = traces[neuron, pre_frames:pre_frames+post_window]
+            
+            # Student's t-test
+            t_stat, p_val = stats.ttest_ind(post_activity, pre_activity)
+            
+            # Neuron responds if p < alpha 
+            responsive[neuron] = (p_val < significance_level) 
+            # and post activity > pre activity
+            # and (np.mean(post_activity) > np.mean(pre_activity))
+        
+        responsive_neurons[condition] = responsive
+        
+    return responsive_neurons
+
+def plot_dff_mean_by_contrast(session_path, save_path=None, use_responsive_only=True):
+    """
+    Plot dff mean by contrast for a session.
+    
+    Args:
+        session_path: Path to the session directory
+        save_path: Path where to save the figure. If None, uses session_path
+        use_responsive_only: If True, uses data from responsive_neurons folder,
+                           if False, uses data from all_neurons folder
+    """
+    # Determine subfolder based on use_responsive_only
+    subfolder = 'responsive_neurons' if use_responsive_only else 'all_neurons'
+    subfolder_path = os.path.join(session_path, subfolder)
+    
+    # Load data from the appropriate subfolder
+    pickle_path = os.path.join(subfolder_path, 'imaging-dff_mean_zscored.pkl')
+    with open(pickle_path, 'rb') as f:
+        dff_mean_reward_zscored, dff_mean_stimuli_zscored, dff_mean_choice_zscored = pickle.load(f)
+    
+    sns.set(style="whitegrid", font_scale=1.2)
+    plt.figure(figsize=(18, 5))
+    contrasts = [-0.5, -0.25, -0.125, -0.0625, 0, 0.0625, 0.125, 0.25, 0.5]
+    contrast_labels = [str(c) for c in contrasts]
+
+    # Helper to get data for each contrast
+    def get_data(dff_dict):
+        data = []
+        for contrast in contrasts:
+            if contrast == 0:
+                condition = 'zero contrast'
+            elif contrast < 0:
+                condition = f'contra {abs(contrast)}'
+            else:
+                condition = f'ipsi {contrast}'
+            if condition in dff_dict and dff_dict[condition] is not None:
+                for val in dff_dict[condition]:
+                    data.append({'contrast': contrast, 'value': val})
+        return pd.DataFrame(data)
+
+    # Get all means for global y-axis
+    all_means = []
+    for dff_dict in [dff_mean_stimuli_zscored, dff_mean_choice_zscored, dff_mean_reward_zscored]:
+        df = get_data(dff_dict)
+        means = df.groupby('contrast')['value'].mean()
+        all_means.extend(means.values)
+    min_y = min(all_means) - 0.05
+    max_y = max(all_means) + 0.05
+
+    # Plot for each type
+    for i, (title, dff_dict) in enumerate(zip(
+        ['Stimulus Response', 'Choice Response', 'Reward Response'],
+        [dff_mean_stimuli_zscored, dff_mean_choice_zscored, dff_mean_reward_zscored]
+    )):
+        plt.subplot(1, 3, i+1)
+        df = get_data(dff_dict)
+        sns.stripplot(x='contrast', y='value', data=df, order=contrasts, color='gray', size=4, alpha=0.6, jitter=True)
+        sns.pointplot(
+            x='contrast', y='value', data=df, order=contrasts, color='royalblue',
+            capsize=0.15, err_kws={'linewidth': 2}, markers='o', linestyles='-'
+        )
+        plt.axvline(x=4, color='gray', linestyle='--', alpha=0.5)  # x=4 is contrast==0
+        plt.xlabel('Total Contrast')
+        plt.ylabel('Mean Activity (z-score)')
+        plt.title(title)
+        plt.xticks(ticks=range(len(contrasts)), labels=contrast_labels, rotation=45)
+        plt.ylim(min_y, max_y)
+        plt.tight_layout()
+
+    # If no save_path, use subfolder_path
+    if save_path is None:
+        save_path = subfolder_path
+        
+    # Save the figure in the specified path
+    plt.savefig(os.path.join(save_path, 'dff_mean_by_contrast.png'))
+    plt.close()

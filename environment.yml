@@ -1,4 +1,4 @@
-name: sideBias
+name: analysis_env
 channels:
   - conda-forge
   - defaults
@@ -9,8 +9,6 @@ dependencies:
   - matplotlib
   - seaborn
   - scipy
-  - statsmodels
-  - tifffile
   - jupyter
   - ipykernel
   - scikit-learn

@@ -82,59 +82,88 @@ def save_figureAll(name,base_path):
     plt.savefig(os.path.join(base_path, f'{name}.svg'), 
                bbox_inches='tight', transparent=True)
 
-def lineplot_sessions(dffTrace_mean,analysis_params, colormap,
-                    duration,zscoreRun, savefigname, savefigpath ) :
-    
-    color =  sns.color_palette(colormap, len(analysis_params))
-    sessionsData ={}
+def lineplot_sessions(dffTrace_mean, analysis_params, colormap,
+                    duration, zscoreRun, savefigname, savefigpath, baseline_subtract=None, title=None):
+    """
+    Plots session mean traces for given analysis parameters and saves the figure.
+    Optionally applies baseline subtraction and z-scoring.
+    If 'title' is provided, it will be set as the plot title.
+    """
+    color = sns.color_palette(colormap, len(analysis_params))
+    sessionsData = {}
 
-    for indx, params in enumerate(analysis_params) :
-        array = dffTrace_mean[params]   
+    for indx, params in enumerate(analysis_params):
+        array = dffTrace_mean[params]
         if np.array_equal(array, np.array(None)):
             sessionsData[indx] = None
         else:
             nCell = array.shape[0]
-            analysis_window = array.shape[1]    
+            analysis_window = array.shape[1]
             array = np.reshape(array, (nCell, analysis_window))
+
+            # Apply baseline subtraction if specified
+            if baseline_subtract is not None:
+                # Calculate baseline from the specified time window
+                # Assuming baseline_subtract is in seconds and we need to convert to frames
+                # The time window is typically -2 to 6 seconds, so we need to map this
+                fRate_imaging = 30  # Hz
+                pre_stim_sec = 2  # seconds before stimulus
+                total_time = 8  # total time window (-2 to 6 seconds)
+
+                # Convert baseline window from seconds to frame indices
+                baseline_start_frame = int((baseline_subtract[0] + pre_stim_sec) * fRate_imaging)
+                baseline_end_frame = int((baseline_subtract[1] + pre_stim_sec) * fRate_imaging)
+
+                # Ensure indices are within bounds
+                baseline_start_frame = max(0, baseline_start_frame)
+                baseline_end_frame = min(array.shape[1], baseline_end_frame)
+
+                if baseline_end_frame > baseline_start_frame:
+                    # Calculate baseline mean for each cell
+                    baseline_mean = np.nanmean(array[:, baseline_start_frame:baseline_end_frame], axis=1, keepdims=True)
+                    # Subtract baseline
+                    array = array - baseline_mean
+
             if zscoreRun:
-                sessionsData[indx]= zscore(array, axis = 1)
+                sessionsData[indx] = zscore(array, axis=1)
             else:
-                sessionsData[indx]= array
-    step = 30 # for x ticks
+                sessionsData[indx] = array
+    step = 30  # for x ticks
     if int(duration[0]) > 5.1:
         print('Traces are only avaiable for 5 sec after onset defined time')
     else:
-        yaxis_length = int(duration[0])*30
-    plt.subplot(2,2, 1)
+        xaxis_length = int(duration[0]) * 30
+    plt.subplot(2, 2, 1)
     for idx, sessionData in enumerate(sessionsData):
         plot_data = sessionsData[idx]
         if type(plot_data) != type(None):
-            
-            x_labels = np.linspace(-2, 6, plot_data.shape[1], dtype = int)
+            x_labels = np.linspace(-2, 6, plot_data.shape[1], dtype=int)
             xticks = np.arange(0, len(x_labels), step)
             xticklabels = x_labels[::step]
             df = pd.DataFrame(plot_data).melt()
             # Smooth the data using lowess method from statsmodels
-            x=df['variable']
-            y=df['value']
-            lowess_smoothed = sm.nonparametric.lowess(y, x,frac=0.1)
-            ax = sns.lineplot(x=x, y=y, data=df, color=color[idx], 
+            x = df['variable']
+            y = df['value']
+            lowess_smoothed = sm.nonparametric.lowess(y, x, frac=0.1)
+            ax = sns.lineplot(x=x, y=y, data=df, color=color[idx],
                               label=analysis_params[idx])
-            ax = sns.lineplot(x=lowess_smoothed[:, 0], y=lowess_smoothed[:, 1], 
-                              data=df, color=color[idx], linewidth = 3 )
-
             plt.axvline(x=60, color='k', linestyle='--')
-            plt.xticks (ticks = xticks, labels= xticklabels)
+            plt.xticks(ticks=xticks, labels=xticklabels)
             ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
-            plt.xlim(30,60+yaxis_length)
+            plt.xlim(30, 60 + xaxis_length)
             plt.xlabel('Time (sec)')
             if zscoreRun:
                 plt.ylabel('DFF(zscore)')
             else:
-                plt.ylabel('DFF')
+                if baseline_subtract is not None:
+                    plt.ylabel('DFF (baseline subtracted)')
+                else:
+                    plt.ylabel('DFF')
             plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-            #plt.title(analysis_params[idx])
-    save_figureAll(savefigname,savefigpath)
+    # Set the title if provided
+    if title is not None:
+        plt.title(title)
+    save_figureAll(savefigname, savefigpath)
 
 def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
                        selectedSession, duration, savefigname, savefigpath ) :
@@ -169,7 +198,7 @@ def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
 
         grid_ratio = [1 for _ in range(len(analysis_params))]
         grid_ratio.append(0.05) # for the colorbar
-        fig, axes = plt.subplots(nrows=1, ncols=len(analysis_params)+1, figsize=((len(analysis_params)+1)*2, 12), 
+        fig, axes = plt.subplots(nrows=1, ncols=len(analysis_params)+1, figsize=((len(analysis_params)+1)*2, 6), 
                                 gridspec_kw={'width_ratios': grid_ratio})
 
         for idx, sessionData in enumerate(sessionsData):
@@ -178,13 +207,13 @@ def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
                 if selectedSession == 'WithinSession':
                     sortedInd = np.array(np.nanmean(plot_data[:, pre_frames:(pre_frames + analysisWindowDur)], axis=1)).argsort()[::-1]
                 else:
-                    # Asegurarse de que el índice seleccionado existe
+                    # Make sure the selected index exists
                     if selectedSession < len(sessionsData) and sessionsData[selectedSession] is not None:
                         sortedInd = np.array(np.nanmean(sessionsData[selectedSession][:, pre_frames:(pre_frames + analysisWindowDur)], axis=1)).argsort()[::-1]
                     else:
                         sortedInd = np.array(np.nanmean(plot_data[:, pre_frames:(pre_frames + analysisWindowDur)], axis=1)).argsort()[::-1]
 
-                # Asegurarse de que los índices están dentro de los límites
+                # Make sure the selected indices are within the limits
                 sortedInd = sortedInd[sortedInd < plot_data.shape[0]]
                 plot_data = plot_data[sortedInd]
                 
@@ -481,6 +510,7 @@ def plot_combined_psychometric(info, save_path=None):
     plt.close()
     
     print(f"Figure saved at: {full_save_path}")
+
 
 
 def plot_combined_response_time(info, analysis_path, save_path=None):
@@ -979,3 +1009,388 @@ def plot_combined_neural_activity(info, analysis_params, colormap='Set2', durati
     plt.close()
     
     print(f"Figure saved at: {full_save_path}")
+
+def plot_single_session_response_time_histogram(session_path, session_name, save_path=None, bins=30, 
+                                              exclude_zero_contrast=True, figsize=(12, 8)):
+    """
+    Creates a histogram of response times for a single session, excluding trials with contrast=0.
+    
+    Args:
+        session_path: String with the path to the session folder
+        session_name: String with the session name
+        save_path: Path where to save the figure. If None, uses session_path
+        bins: Number of bins for the histogram (default: 30)
+        exclude_zero_contrast: Boolean to exclude trials with contrast=0 (default: True)
+        figsize: Tuple with figure size (default: (12, 8))
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import os
+    
+    # Construct CSV path
+    csv_path = os.path.join(session_path, f"{session_name}_CorrectedeventTimes.csv")
+    
+    if not os.path.exists(csv_path):
+        print(f"Error: CSV file not found at {csv_path}")
+        return
+    
+    # Read CSV file
+    b = pd.read_csv(csv_path)
+    
+    # Filter good trials
+    good_trials = (b['repeatNumber'] == 1) & (b['choice'] != 'NoGo')
+    
+    # Calculate contrast difference
+    c_diff = b['contrastRight'] - b['contrastLeft']
+    
+    # Calculate response time
+    response_time = b['choiceCompleteTime'] - b['stimulusOnsetTime']
+    
+    # Filter out trials with contrast=0 if requested
+    if exclude_zero_contrast:
+        non_zero_trials = c_diff != 0
+        good_trials = good_trials & non_zero_trials
+    
+    # Get response times for good trials
+    valid_response_times = response_time[good_trials]
+    
+    if len(valid_response_times) == 0:
+        print(f"Error: No valid trials found for session {session_name}")
+        return
+    
+    # Create figure
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=figsize)
+    
+    # Plot 1: Overall histogram of response times
+    ax1.hist(valid_response_times, bins=bins, alpha=0.7, color='skyblue', edgecolor='black')
+    ax1.set_xlabel('Response Time (s)')
+    ax1.set_ylabel('Number of Trials')
+    ax1.set_title(f'Response Time Distribution - {session_name}')
+    ax1.grid(True, alpha=0.3)
+    
+    # Add more x-axis ticks for better resolution
+    x_min, x_max = ax1.get_xlim()
+    x_ticks = np.linspace(x_min, x_max, 20)  # 20 ticks across the range
+    ax1.set_xticks(x_ticks)
+    ax1.set_xticklabels([f'{tick:.2f}' for tick in x_ticks], rotation=45, ha='right')
+    
+    # Add statistics
+    mean_rt = np.mean(valid_response_times)
+    median_rt = np.median(valid_response_times)
+    std_rt = np.std(valid_response_times)
+    ax1.axvline(mean_rt, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_rt:.3f}s')
+    ax1.axvline(median_rt, color='green', linestyle='--', linewidth=2, label=f'Median: {median_rt:.3f}s')
+    ax1.legend()
+    
+    # Plot 2: Response time vs contrast
+    unique_contrasts = np.unique(c_diff[good_trials])
+    mean_times = []
+    sem_times = []
+    
+    for contrast in unique_contrasts:
+        trials = (c_diff == contrast) & good_trials
+        times = response_time[trials]
+        mean_times.append(np.mean(times))
+        sem_times.append(np.std(times, ddof=1) / np.sqrt(len(times)))
+    
+    ax2.errorbar(unique_contrasts, mean_times, yerr=sem_times, 
+                fmt='o-', capsize=5, capthick=2, linewidth=2, markersize=8)
+    ax2.set_xlabel('Contrast Difference (Right - Left)')
+    ax2.set_ylabel('Mean Response Time (s)')
+    ax2.set_title('Response Time vs Contrast')
+    ax2.grid(True, alpha=0.3)
+    ax2.axvline(x=0, color='k', linestyle='--', alpha=0.5)
+    
+    # Plot 3: Separate histograms for positive and negative contrasts
+    positive_trials = (c_diff > 0) & good_trials
+    negative_trials = (c_diff < 0) & good_trials
+    
+    positive_times = response_time[positive_trials]
+    negative_times = response_time[negative_trials]
+    
+    if len(positive_times) > 0:
+        ax3.hist(positive_times, bins=bins, alpha=0.7, color='green', 
+                label=f'Positive (n={len(positive_times)})', edgecolor='black')
+    if len(negative_times) > 0:
+        ax3.hist(negative_times, bins=bins, alpha=0.7, color='red', 
+                label=f'Negative (n={len(negative_times)})', edgecolor='black')
+    
+    ax3.set_xlabel('Response Time (s)')
+    ax3.set_ylabel('Number of Trials')
+    ax3.set_title('Response Time by Contrast Sign')
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    
+    # Add more x-axis ticks for better resolution
+    x_min, x_max = ax3.get_xlim()
+    x_ticks = np.linspace(x_min, x_max, 20)  # 20 ticks across the range
+    ax3.set_xticks(x_ticks)
+    ax3.set_xticklabels([f'{tick:.2f}' for tick in x_ticks], rotation=45, ha='right')
+    
+    # Plot 4: Box plot of response times by contrast
+    contrast_groups = []
+    contrast_labels = []
+    
+    for contrast in unique_contrasts:
+        trials = (c_diff == contrast) & good_trials
+        times = response_time[trials]
+        if len(times) > 0:
+            contrast_groups.append(times)
+            contrast_labels.append(f'{contrast:.3f}')
+    
+    if contrast_groups:
+        bp = ax4.boxplot(contrast_groups, labels=contrast_labels, patch_artist=True)
+        colors = plt.cm.Set3(np.linspace(0, 1, len(bp['boxes'])))
+        for patch, color in zip(bp['boxes'], colors):
+            patch.set_facecolor(color)
+        ax4.set_xlabel('Contrast Difference')
+        ax4.set_ylabel('Response Time (s)')
+        ax4.set_title('Response Time Distribution by Contrast')
+        ax4.grid(True, alpha=0.3)
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    # Save the plot instead of showing it
+    save_path = os.path.join(session_path, f'{session_name}_response_time_histogram.png')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()  # Close the figure to free memory
+    
+    print(f"Response time histogram saved to: {save_path}")
+    
+    return fig
+
+def plot_individual_cell_traces_by_contrast(dffTrace_stimuli, session_name, save_path=None, 
+                                           figsize=(15, 60), n_cols=3, time_window=[-2, 6], baseline_window=None,
+                                           contrast_conditions=None, contrast_labels=None):
+    """
+    Plots the mean trace of each cell aligned to stimulus, separated by contrast using the viridis colormap.
+    Supports baseline subtraction and custom contrast conditions/labels.
+
+    Args:
+        dffTrace_stimuli: dict, keys are contrast conditions, values are arrays (cell x time x trial)
+        session_name: str, session name for the plot title
+        save_path: str or None, directory to save the plot (if None, shows the plot)
+        figsize: tuple, figure size
+        n_cols: int, number of columns in the subplot grid
+        time_window: list, [start_time, end_time] in seconds
+        baseline_window: list or None, [start, end] in seconds for baseline subtraction
+        contrast_conditions: list or None, keys to plot from dffTrace_stimuli
+        contrast_labels: list or None, labels for the legend
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import seaborn as sns
+    import os
+    # Defaults for rewarded trials of all contrasts
+    if contrast_conditions is None:
+        contrast_conditions = ['0.5 reward', '0.25 reward', '0.125 reward', '0.0625 reward', '0 reward']
+    if contrast_labels is None:
+        contrast_labels = ['0.5', '0.25', '0.125', '0.0625', '0']
+    colors = sns.color_palette("viridis", len(contrast_conditions))
+    first_condition = contrast_conditions[0]
+    if dffTrace_stimuli.get(first_condition) is None:
+        print(f"No data available for condition {first_condition}")
+        return
+    n_cells = dffTrace_stimuli[first_condition].shape[0]
+    n_rows = int(np.ceil(n_cells / n_cols))
+    fps = 30
+    pre_frames = int(abs(time_window[0]) * fps)
+    post_frames = int(time_window[1] * fps)
+    total_frames = pre_frames + post_frames
+    time_axis = np.linspace(time_window[0], time_window[1], total_frames)
+    if baseline_window is not None:
+        baseline_start_idx = int((baseline_window[0] - time_window[0]) * fps)
+        baseline_end_idx = int((baseline_window[1] - time_window[0]) * fps)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+    if n_cells == 1:
+        axes = [axes]
+    elif n_rows == 1:
+        axes = axes.reshape(1, -1)
+    else:
+        axes = axes.flatten()
+    for cell_idx in range(n_cells):
+        ax = axes[cell_idx]
+        for cond_idx, condition in enumerate(contrast_conditions):
+            if dffTrace_stimuli.get(condition) is not None:
+                if cell_idx >= dffTrace_stimuli[condition].shape[0]:
+                    continue
+                cell_data = dffTrace_stimuli[condition][cell_idx, :, :]
+                if baseline_window is not None:
+                    baseline_vals = np.nanmean(cell_data[baseline_start_idx:baseline_end_idx, :], axis=0, keepdims=True)
+                    cell_data = cell_data - baseline_vals
+                mean_trace = np.nanmean(cell_data, axis=1)
+                sem_trace = np.nanstd(cell_data, axis=1) / np.sqrt(np.sum(~np.isnan(cell_data), axis=1))
+                ax.plot(time_axis, mean_trace, color=colors[cond_idx], 
+                        linewidth=2, label=f'{contrast_labels[cond_idx]}')
+                ax.fill_between(time_axis, 
+                                mean_trace - sem_trace, 
+                                mean_trace + sem_trace, 
+                                color=colors[cond_idx], alpha=0.3)
+        ax.axvline(x=0, color='k', linestyle='--', alpha=0.5, linewidth=1)
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('dF/F')
+        ax.set_title(f'Cell {cell_idx + 1}')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(time_window)
+    for idx in range(n_cells, len(axes)):
+        fig.delaxes(axes[idx])
+    # Global legend
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper right', fontsize=10, title='Contrast')
+    fig.suptitle(f'Individual Cell Traces by Contrast - {session_name}', fontsize=16, y=0.98)
+    plt.subplots_adjust(hspace=0.5, wspace=0.3)
+    if save_path is not None:
+        os.makedirs(save_path, exist_ok=True)
+        save_file = os.path.join(save_path, f'{session_name}_individual_cell_traces_by_contrast.png')
+        plt.savefig(save_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"Individual cell traces saved to: {save_file}")
+    else:
+        plt.show()
+    return fig
+
+def plot_individual_cell_traces_by_contrast_zscored(dffTrace_stimuli_z, session_name, save_path=None, 
+                                                   figsize=(15, 60), n_cols=3, time_window=[-2, 6], baseline_window=None,
+                                                   contrast_conditions=None, contrast_labels=None):
+    """
+    Plots individual cell traces (z-scored) aligned to stimulus, separated by contrast with viridis colormap.
+    Permite sustracción de baseline.
+    Permite especificar condiciones de contraste y etiquetas.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import seaborn as sns
+    import os
+    if contrast_conditions is None:
+        contrast_conditions = ['0.5 reward', '0.25 reward', '0.125 reward', '0.0625 reward', '0 reward']
+    if contrast_labels is None:
+        contrast_labels = ['0.5', '0.25', '0.125', '0.0625', '0']
+    colors = sns.color_palette("viridis", len(contrast_conditions))
+    first_condition = contrast_conditions[0]
+    if dffTrace_stimuli_z.get(first_condition) is None:
+        print(f"No data available for condition {first_condition}")
+        return
+    n_cells = dffTrace_stimuli_z[first_condition].shape[0]
+    n_rows = int(np.ceil(n_cells / n_cols))
+    fps = 30
+    pre_frames = int(abs(time_window[0]) * fps)
+    post_frames = int(time_window[1] * fps)
+    total_frames = pre_frames + post_frames
+    time_axis = np.linspace(time_window[0], time_window[1], total_frames)
+    if baseline_window is not None:
+        baseline_start_idx = int((baseline_window[0] - time_window[0]) * fps)
+        baseline_end_idx = int((baseline_window[1] - time_window[0]) * fps)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+    if n_cells == 1:
+        axes = [axes]
+    elif n_rows == 1:
+        axes = axes.reshape(1, -1)
+    else:
+        axes = axes.flatten()
+    for cell_idx in range(n_cells):
+        ax = axes[cell_idx]
+        for cond_idx, condition in enumerate(contrast_conditions):
+            if dffTrace_stimuli_z.get(condition) is not None:
+                if cell_idx >= dffTrace_stimuli_z[condition].shape[0]:
+                    continue
+                cell_data = dffTrace_stimuli_z[condition][cell_idx, :, :]
+                if baseline_window is not None:
+                    baseline_vals = np.nanmean(cell_data[baseline_start_idx:baseline_end_idx, :], axis=0, keepdims=True)
+                    cell_data = cell_data - baseline_vals
+                mean_trace = np.nanmean(cell_data, axis=1)
+                sem_trace = np.nanstd(cell_data, axis=1) / np.sqrt(np.sum(~np.isnan(cell_data), axis=1))
+                ax.plot(time_axis, mean_trace, color=colors[cond_idx], 
+                        linewidth=2, label=f'{contrast_labels[cond_idx]}')
+                ax.fill_between(time_axis, 
+                                mean_trace - sem_trace, 
+                                mean_trace + sem_trace, 
+                                color=colors[cond_idx], alpha=0.3)
+        ax.axvline(x=0, color='k', linestyle='--', alpha=0.5, linewidth=1)
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('dF/F (z-score)')
+        ax.set_title(f'Cell {cell_idx + 1}')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(time_window)
+    for idx in range(n_cells, len(axes)):
+        fig.delaxes(axes[idx])
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper right', fontsize=10, title='Contraste')
+    fig.suptitle(f'Individual Cell Traces by Contrast (Z-scored) - {session_name}', fontsize=16, y=0.98)
+    plt.subplots_adjust(hspace=0.5, wspace=0.3)
+    if save_path is not None:
+        os.makedirs(save_path, exist_ok=True)
+        save_file = os.path.join(save_path, f'{session_name}_individual_cell_traces_by_contrast_zscored.png')
+        plt.savefig(save_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"Individual cell traces (z-scored) saved to: {save_file}")
+    else:
+        plt.show()
+    return fig
+
+def plot_single_neuron_traces_by_contrast(dffTrace_stimuli, session_name, save_path=None, 
+                                           time_window=[-2, 6], baseline_window=None,
+                                           contrast_conditions=None, contrast_labels=None, fps=30):
+    """
+    Plots and saves one figure per neuron, showing all available contrast traces for that neuron.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import seaborn as sns
+    import os
+    if contrast_conditions is None:
+        contrast_conditions = ['0.5 reward', '0.25 reward', '0.125 reward', '0.0625 reward', '0 reward']
+    if contrast_labels is None:
+        contrast_labels = ['0.5', '0.25', '0.125', '0.0625', '0']
+    colors = sns.color_palette("viridis", len(contrast_conditions))
+    first_condition = contrast_conditions[0]
+    if dffTrace_stimuli.get(first_condition) is None:
+        print(f"No data available for condition {first_condition}")
+        return
+    n_cells = dffTrace_stimuli[first_condition].shape[0]
+    pre_frames = int(abs(time_window[0]) * fps)
+    post_frames = int(time_window[1] * fps)
+    total_frames = pre_frames + post_frames
+    time_axis = np.linspace(time_window[0], time_window[1], total_frames)
+    if baseline_window is not None:
+        baseline_start_idx = int((baseline_window[0] - time_window[0]) * fps)
+        baseline_end_idx = int((baseline_window[1] - time_window[0]) * fps)
+    # Create output folder
+    if save_path is not None:
+        single_neuron_dir = os.path.join(save_path, 'single-neuron plots')
+        os.makedirs(single_neuron_dir, exist_ok=True)
+    else:
+        single_neuron_dir = None
+    # Loop over neurons
+    for cell_idx in range(n_cells):
+        plt.figure(figsize=(8, 4))
+        for cond_idx, condition in enumerate(contrast_conditions):
+            if dffTrace_stimuli.get(condition) is not None and cell_idx < dffTrace_stimuli[condition].shape[0]:
+                cell_data = dffTrace_stimuli[condition][cell_idx, :, :]
+                n_trials = cell_data.shape[1]
+                if n_trials == 0:
+                    continue
+                if baseline_window is not None:
+                    baseline_vals = np.nanmean(cell_data[baseline_start_idx:baseline_end_idx, :], axis=0, keepdims=True)
+                    cell_data = cell_data - baseline_vals
+                mean_trace = np.nanmean(cell_data, axis=1)
+                sem_trace = np.nanstd(cell_data, axis=1) / np.sqrt(np.sum(~np.isnan(cell_data), axis=1))
+                plt.plot(time_axis, mean_trace, color=colors[cond_idx], linewidth=2, label=f'{contrast_labels[cond_idx]} (n={n_trials})')
+                plt.fill_between(time_axis, mean_trace - sem_trace, mean_trace + sem_trace, color=colors[cond_idx], alpha=0.3)
+        plt.axvline(x=0, color='k', linestyle='--', alpha=0.5, linewidth=1)
+        plt.xlabel('Time (s)')
+        plt.ylabel('dF/F')
+        plt.title(f'{session_name} - Cell {cell_idx+1}')
+        plt.xlim(time_window)
+        plt.legend(title='Contrast', fontsize=9)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        # Save figure
+        if single_neuron_dir is not None:
+            fname = os.path.join(single_neuron_dir, f'{session_name}_cell{cell_idx+1}.png')
+            plt.savefig(fname, dpi=200, bbox_inches='tight')
+            plt.close()
+        else:
+            plt.show()
+    print("Done plotting all single-neuron traces.")

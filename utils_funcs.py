@@ -1381,73 +1381,77 @@ def update_json_data(file_name, new_data, analysis_path=None):
     
 def add_ipsi_contra_columns(info, analysis_path):
     """
-    Adds two new columns to the CSV files:
-    1. ipsi_contra_bias: based on comparison between correctResponse and bias from bias_data.json
-    2. ipsi_contra_recside: based on comparison between correctResponse and recording side from recside_data.json
-    
-    Args:
-        info: Info object with recordingList
-        analysis_path: String with the path to the analysis folder
+    Adds three new columns to the CSV files:
+    1. recordingSideStim: 'ipsi' if correctResponse matches recording side, else 'contra'
+    2. recordingSideChoice: 'ipsi' if choice matches recording side, else 'contra'
+    3. biasStim: 'bias' if correctResponse matches animal bias, else 'no bias'
     """
     import pandas as pd
     import json
     import os
     import glob
-    
+
     # Load bias and recording side data
     bias_json_path = os.path.join(analysis_path, 'bias_data.json')
     recside_json_path = os.path.join(analysis_path, 'recside_data.json')
-    
+
     with open(bias_json_path, 'r') as f:
         bias_data = json.load(f)
     with open(recside_json_path, 'r') as f:
         recside_data = json.load(f)
-    
+
     # Process each session
     for ind, recordingDate in enumerate(info.recordingList.recordingDate):
         try:
             # Get CSV file path
             filenameCSV = info.recordingList.analysispathname[ind] + info.recordingList.sessionName[ind] + '_CorrectedeventTimes.csv'
             e_filenameCSV = [f for f in glob.glob(filenameCSV)]
-            
+
             if len(e_filenameCSV) == 1:
                 # Read CSV
                 df = pd.read_csv(e_filenameCSV[0])
-                
+
                 # Get animal ID and session name
                 animal_id = info.recordingList.sessionName[ind].split('_')[-1]
                 session_name = info.recordingList.sessionName[ind]
-                
+
                 # Get bias and recording side
                 animal_bias = bias_data.get(animal_id)
                 session_side = recside_data.get(session_name)
-                
+
                 if animal_bias is None:
                     print(f"Warning: No bias data found for {animal_id}")
                     continue
-                    
+
                 if session_side is None:
                     print(f"Warning: No recording side data found for {session_name}")
                     continue
-                
-                # Add ipsi/contra columns based on bias
-                df['ipsi_contra_bias'] = 'contra'  # default value
-                if animal_bias == 'Left':
-                    df.loc[df['correctResponse'] == 'Left', 'ipsi_contra_bias'] = 'ipsi'
-                else:  # animal_bias == 'Right'
-                    df.loc[df['correctResponse'] == 'Right', 'ipsi_contra_bias'] = 'ipsi'
-                
-                # Add ipsi/contra columns based on recording side
-                df['ipsi_contra_recside'] = 'contra'  # default value
+
+                # recordingSideStim: 'ipsi' if correctResponse matches recording side, else 'contra'
+                df['recordingSideStim'] = 'contra'
                 if session_side == 'Left':
-                    df.loc[df['correctResponse'] == 'Left', 'ipsi_contra_recside'] = 'ipsi'
+                    df.loc[df['correctResponse'] == 'Left', 'recordingSideStim'] = 'ipsi'
                 else:  # session_side == 'Right'
-                    df.loc[df['correctResponse'] == 'Right', 'ipsi_contra_recside'] = 'ipsi'
-                
+                    df.loc[df['correctResponse'] == 'Right', 'recordingSideStim'] = 'ipsi'
+
+                # recordingSideChoice: 'ipsi' if choice matches recording side, else 'contra'
+                df['recordingSideChoice'] = 'contra'
+                if session_side == 'Left':
+                    df.loc[df['choice'] == 'Left', 'recordingSideChoice'] = 'ipsi'
+                else:  # session_side == 'Right'
+                    df.loc[df['choice'] == 'Right', 'recordingSideChoice'] = 'ipsi'
+
+                # biasStim: 'bias' if correctResponse matches animal bias, else 'no bias'
+                df['biasStim'] = 'no bias'
+                if animal_bias == 'Left':
+                    df.loc[df['correctResponse'] == 'Left', 'biasStim'] = 'bias'
+                else:  # animal_bias == 'Right'
+                    df.loc[df['correctResponse'] == 'Right', 'biasStim'] = 'bias'
+
                 # Save updated CSV
                 df.to_csv(e_filenameCSV[0], index=False)
                 print(f"Updated CSV for session {session_name}")
-                
+
         except Exception as e:
             print(f"Error processing session {ind}: {str(e)}")
             continue
@@ -1510,7 +1514,7 @@ def filter_responsive_neurons(dff_traces, pre_frames, post_frames, significance_
     # Convert frames to seconds (assuming 30 fps)
     fps = 30
     pre_sec = 1  # 1 second before
-    post_sec = 2  # 2 seconds after
+    post_sec = 1  # 1 second after
     
     pre_window = int(pre_sec * fps)
     post_window = int(post_sec * fps)
@@ -1531,13 +1535,13 @@ def filter_responsive_neurons(dff_traces, pre_frames, post_frames, significance_
             # Post-event activity
             post_activity = traces[neuron, pre_frames:pre_frames+post_window]
             
-            # Student's t-test
-            t_stat, p_val = stats.ttest_ind(post_activity, pre_activity)
+            # paired Student's t-test
+            t_stat, p_val = stats.ttest_rel(post_activity, pre_activity)
             
-            # Neuron responds if p < alpha 
-            responsive[neuron] = (p_val < significance_level) 
-            # and post activity > pre activity
-            # and (np.mean(post_activity) > np.mean(pre_activity))
+            # Neuron responds if p < alpha and post activity > pre activity
+            responsive[neuron] = (p_val < significance_level) and (np.mean(post_activity) > np.mean(pre_activity))
+            
+           
         
         responsive_neurons[condition] = responsive
         

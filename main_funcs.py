@@ -56,7 +56,7 @@ class analysis:
         # Create the list 
         info = pd.DataFrame()
         # Recursively search for files ending with 'Block.mat' in all subfolders
-        animalList = ['MBL015']
+        animalList = ['MBL015', 'MBL014']
         badRecordingSessions = ['2023-07-07_1_OFZ008_Block.mat', '2023-07-07_3_OFZ008_Block.mat', # Not good ROIs
                                 '2023-07-11_1_OFZ008_Block.mat', '2023-07-13_2_OFZ008_Block.mat', # Not good ROIs
                                 '2023-06-13_1_OFZ009_Block.mat', '2023-07-03_1_OFZ009_Block.mat',
@@ -112,7 +112,7 @@ class analysis:
                             else:
                                 imaging_filename = [f for f in glob.glob(twoP_path +'\\*t-001')]
                                 imaging_filename = imaging_filename[0]
-
+                                
                         else: # This line does not appear in the code
                             roi= 0
                         
@@ -125,8 +125,9 @@ class analysis:
                                     'learningData': learning,
                                     'twoP':twoP_exist,
                                     'path': root[:-2],
-                                    'sessionNameWithPath': os.path.join(root, fileName)}
-                        
+                                    'sessionNameWithPath': os.path.join(root, fileName),
+                                    'blockName': fileName[:-10],
+                                    'imagingTiffFileNames': glob.glob(twoP_path +'\\*t-001')[0] if glob.glob(twoP_path +'\\*t-001') else ''}
                         # Append the row to the DataFrame
                         info  = pd.concat([info, pd.DataFrame([row_data])], ignore_index=True)     
         self.recordingList = info

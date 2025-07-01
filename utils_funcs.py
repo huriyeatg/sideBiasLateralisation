@@ -1381,10 +1381,11 @@ def update_json_data(file_name, new_data, analysis_path=None):
     
 def add_ipsi_contra_columns(info, analysis_path):
     """
-    Adds three new columns to the CSV files:
+    Adds four new columns to the CSV files:
     1. recordingSideStim: 'ipsi' if correctResponse matches recording side, else 'contra'
     2. recordingSideChoice: 'ipsi' if choice matches recording side, else 'contra'
     3. biasStim: 'bias' if correctResponse matches animal bias, else 'no bias'
+    4. biasChoice: 'bias' if choice matches animal bias, else 'no bias'
     """
     import pandas as pd
     import json
@@ -1448,6 +1449,13 @@ def add_ipsi_contra_columns(info, analysis_path):
                 else:  # animal_bias == 'Right'
                     df.loc[df['correctResponse'] == 'Right', 'biasStim'] = 'bias'
 
+                # biasChoice: 'bias' if choice matches animal bias, else 'no bias'
+                df['biasChoice'] = 'no bias'
+                if animal_bias == 'Left':
+                    df.loc[df['choice'] == 'Left', 'biasChoice'] = 'bias'
+                else:  # animal_bias == 'Right'
+                    df.loc[df['choice'] == 'Right', 'biasChoice'] = 'bias'
+
                 # Save updated CSV
                 df.to_csv(e_filenameCSV[0], index=False)
                 print(f"Updated CSV for session {session_name}")
@@ -1495,7 +1503,7 @@ def process_large_tiff_max_projections(tiff_path, frames_per_group=10000):
             max_proj = np.max(frames_array, axis=0)
             
             # Display maximum projection
-            plt.figure(figsize=(10, 10))
+            plt.figure(figsize=(5, 5))
             plt.imshow(max_proj, cmap='gray')
             plt.title(f'Maximum projection group {group_idx+1}/{n_groups}')
             plt.colorbar()
@@ -1547,78 +1555,112 @@ def filter_responsive_neurons(dff_traces, pre_frames, post_frames, significance_
         
     return responsive_neurons
 
-def plot_dff_mean_by_contrast(session_path, save_path=None, use_responsive_only=True):
+def get_contra_ipsi_diff_cellwise_df(
+    recordingList, 
+    subfolder='responsive_neurons', 
+    coords_csv_path=None
+):
     """
-    Plot dff mean by contrast for a session.
-    
-    Args:
-        session_path: Path to the session directory
-        save_path: Path where to save the figure. If None, uses session_path
-        use_responsive_only: If True, uses data from responsive_neurons folder,
-                           if False, uses data from all_neurons folder
+    Returns a DataFrame with xpix, ypix, contra-ipsi diff, sessionName, cell_id, AP, and ML for all responsive cells.
     """
-    # Determine subfolder based on use_responsive_only
-    subfolder = 'responsive_neurons' if use_responsive_only else 'all_neurons'
-    subfolder_path = os.path.join(session_path, subfolder)
+    import pandas as pd
+    import numpy as np
+    import os
+    import pickle
+    import json
+    import utils_funcs as utils
     
-    # Load data from the appropriate subfolder
-    pickle_path = os.path.join(subfolder_path, 'imaging-dff_mean_zscored.pkl')
-    with open(pickle_path, 'rb') as f:
-        dff_mean_reward_zscored, dff_mean_stimuli_zscored, dff_mean_choice_zscored = pickle.load(f)
+    if coords_csv_path is None:
+        raise ValueError('You must provide coords_csv_path (path to the CSV with x/y coordinates)')
     
-    sns.set(style="whitegrid", font_scale=1.2)
-    plt.figure(figsize=(18, 5))
-    contrasts = [-0.5, -0.25, -0.125, -0.0625, 0, 0.0625, 0.125, 0.25, 0.5]
-    contrast_labels = [str(c) for c in contrasts]
+    # Load session coordinates CSV
+    if coords_csv_path.endswith('.xlsx'):
+        coords_df = pd.read_excel(coords_csv_path)
+    else:
+        coords_df = pd.read_csv(coords_csv_path)
+    # It should have columns: sessionName, x, y
 
-    # Helper to get data for each contrast
-    def get_data(dff_dict):
-        data = []
-        for contrast in contrasts:
-            if contrast == 0:
-                condition = 'zero contrast'
-            elif contrast < 0:
-                condition = f'contra {abs(contrast)}'
-            else:
-                condition = f'ipsi {contrast}'
-            if condition in dff_dict and dff_dict[condition] is not None:
-                for val in dff_dict[condition]:
-                    data.append({'contrast': contrast, 'value': val})
-        return pd.DataFrame(data)
+    rows = []
+    pre_frames = 60  # 2 sec * 30 Hz
+    post_frames = 180  # 6 sec * 30 Hz
 
-    # Get all means for global y-axis
-    all_means = []
-    for dff_dict in [dff_mean_stimuli_zscored, dff_mean_choice_zscored, dff_mean_reward_zscored]:
-        df = get_data(dff_dict)
-        means = df.groupby('contrast')['value'].mean()
-        all_means.extend(means.values)
-    min_y = min(all_means) - 0.05
-    max_y = max(all_means) + 0.05
+    for ind, recordingDate in enumerate(recordingList.recordingDate):
+        if recordingList.imagingDataExtracted[ind] == 1:
+            session_name = recordingList.sessionName[ind]
+            pathname = recordingList.analysispathname[ind]
+            subfolder_path = os.path.join(pathname, subfolder)
+            try:
+                # Get AP/ML coordinates for this session
+                row = coords_df[coords_df['sessionName'] == session_name]
+                if row.empty:
+                    print(f"Warning: No coordinates found for session {session_name}")
+                    continue
+                x_csv = float(row.iloc[0]['x'])
+                y_csv = float(row.iloc[0]['y'])
+                offset = 512 * 0.792 / (2*1000) # 512 is the number of pixels in the imaging plane, 0.792 is the pixel size in microns, 1000 is to convert to mm, 2 is to divide by 2 to get the center of the imaging plane
 
-    # Plot for each type
-    for i, (title, dff_dict) in enumerate(zip(
-        ['Stimulus Response', 'Choice Response', 'Reward Response'],
-        [dff_mean_stimuli_zscored, dff_mean_choice_zscored, dff_mean_reward_zscored]
-    )):
-        plt.subplot(1, 3, i+1)
-        df = get_data(dff_dict)
-        sns.stripplot(x='contrast', y='value', data=df, order=contrasts, color='gray', size=4, alpha=0.6, jitter=True)
-        sns.pointplot(
-            x='contrast', y='value', data=df, order=contrasts, color='royalblue',
-            capsize=0.15, err_kws={'linewidth': 2}, markers='o', linestyles='-'
-        )
-        plt.axvline(x=4, color='gray', linestyle='--', alpha=0.5)  # x=4 is contrast==0
-        plt.xlabel('Total Contrast')
-        plt.ylabel('Mean Activity (z-score)')
-        plt.title(title)
-        plt.xticks(ticks=range(len(contrasts)), labels=contrast_labels, rotation=45)
-        plt.ylim(min_y, max_y)
-        plt.tight_layout()
-
-    # If no save_path, use subfolder_path
-    if save_path is None:
-        save_path = subfolder_path
-        
-    # Save the figure in the specified path
-    plt.savefig(os.path.join(save_path, 'dff_mean_by_contrast.png'))
-    plt.close()
+                # Load zscored data
+                with open(os.path.join(subfolder_path, 'imaging-dffTrace_mean_zscored.pkl'), 'rb') as f:
+                    _, _, dffTrace_mean_choice = pickle.load(f)
+                # Load stat
+                imData = pd.read_pickle(pathname + 'imaging-data.pkl')
+                stat = imData['stat']
+                # Get ypix and xpix for each cell
+                ypix = np.array([np.mean(cell['ypix']) for cell in stat])
+                xpix = np.array([np.mean(cell['xpix']) for cell in stat])
+                # Get means for each cell, matching number of cells
+                contra = dffTrace_mean_choice.get('Choice Contra recordingSide')
+                ipsi = dffTrace_mean_choice.get('Choice Ipsi recordingSide')
+                if contra is not None and ipsi is not None:
+                    n_cells = min(len(ypix), contra.shape[0], ipsi.shape[0])
+                    ypix = ypix[:n_cells]
+                    xpix = xpix[:n_cells]
+                    # Baseline subtraction: baseline window -1 a 0 s 
+                    fRate_imaging = 30
+                    pre_stim_sec = 2
+                    baseline_start_frame = int((-1 + pre_stim_sec) * fRate_imaging)  # 30
+                    baseline_end_frame = int((0 + pre_stim_sec) * fRate_imaging)     # 60
+                    # Subtract baseline from each trace
+                    contra_bl = contra[:n_cells, :] - np.nanmean(contra[:n_cells, baseline_start_frame:baseline_end_frame], axis=1, keepdims=True)
+                    ipsi_bl   = ipsi[:n_cells, :]   - np.nanmean(ipsi[:n_cells, baseline_start_frame:baseline_end_frame], axis=1, keepdims=True)
+                    mean_contra = np.nanmean(contra_bl, axis=1)
+                    mean_ipsi = np.nanmean(ipsi_bl, axis=1)
+                    diff = mean_contra - mean_ipsi
+                    # If responsive_neurons, recalculate the index and filter
+                    if subfolder == 'responsive_neurons':
+                        responsive_idx_dict = utils.filter_responsive_neurons(dffTrace_mean_choice, pre_frames, post_frames)
+                        # Join all responsive indices
+                        responsive_any = None
+                        for cond, mask in responsive_idx_dict.items():
+                            if mask is not None:
+                                if responsive_any is None:
+                                    responsive_any = mask.copy()
+                                else:
+                                    responsive_any = responsive_any | mask
+                        if responsive_any is not None:
+                            ypix = ypix[responsive_any]
+                            xpix = xpix[responsive_any]
+                            diff = diff[responsive_any]
+                            cell_ids = np.arange(n_cells)[responsive_any]
+                        else:
+                            cell_ids = np.array([], dtype=int)
+                    else:
+                        cell_ids = np.arange(n_cells)
+                    # Add rows to the dataframe
+                    for i in range(len(diff)):
+                        AP = x_csv - offset + (xpix[i] * 0.792 / 1000) # 0.792 is the pixel size in microns, 1000 is to convert to mm
+                        ML = y_csv - offset + (ypix[i] * 0.792 / 1000) # 0.792 is the pixel size in microns, 1000 is to convert to mm
+                        rows.append({
+                            'xpix': xpix[i],
+                            'ypix': ypix[i],
+                            'contra_ipsi_diff': diff[i],
+                            'sessionName': session_name,
+                            'cell_id': int(cell_ids[i]),
+                            'AP': AP,
+                            'ML': ML
+                        })
+            except Exception as e:
+                print(f"Error in session {session_name}: {str(e)}")
+                continue
+    df = pd.DataFrame(rows, columns=['xpix', 'ypix', 'contra_ipsi_diff', 'sessionName', 'cell_id', 'AP', 'ML'])
+    return df

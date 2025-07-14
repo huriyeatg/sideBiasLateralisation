@@ -1558,10 +1558,15 @@ def filter_responsive_neurons(dff_traces, pre_frames, post_frames, significance_
 def get_contra_ipsi_diff_cellwise_df(
     recordingList, 
     subfolder='responsive_neurons', 
-    coords_csv_path=None
+    coords_csv_path=None,
+    alignment='choice',  # 'choice' (default) or 'stimulus'
+    key_contra=None,
+    key_ipsi=None
 ):
     """
     Returns a DataFrame with xpix, ypix, contra-ipsi diff, sessionName, cell_id, AP, and ML for all responsive cells.
+    alignment: 'choice' (default) uses 'Choice Hemi Contra/Ipsi', 'stimulus' uses 'Stim Hemi Contra/Ipsi'.
+    You can override the keys with key_contra and key_ipsi.
     """
     import pandas as pd
     import numpy as np
@@ -1584,9 +1589,24 @@ def get_contra_ipsi_diff_cellwise_df(
     pre_frames = 60  # 2 sec * 30 Hz
     post_frames = 180  # 6 sec * 30 Hz
 
+    # Determine keys according to alignment or arguments
+    if key_contra is None or key_ipsi is None:
+        if alignment == 'choice':
+            key_contra = 'Choice Hemi Contra'
+            key_ipsi = 'Choice Hemi Ipsi'
+        elif alignment == 'stimulus':
+            key_contra = 'Stim Hemi Contra'
+            key_ipsi = 'Stim Hemi Ipsi'
+        else:
+            raise ValueError("alignment must be 'choice' or 'stimulus'")
+
     for ind, recordingDate in enumerate(recordingList.recordingDate):
         if recordingList.imagingDataExtracted[ind] == 1:
             session_name = recordingList.sessionName[ind]
+            # Skip the session if it ends with '2025-05-22_1_MBL015'
+            if session_name.endswith('2025-05-22_1_MBL015'):
+                print(f"Skipping session {session_name} as requested.")
+                continue
             pathname = recordingList.analysispathname[ind]
             subfolder_path = os.path.join(pathname, subfolder)
             try:
@@ -1601,7 +1621,14 @@ def get_contra_ipsi_diff_cellwise_df(
 
                 # Load zscored data
                 with open(os.path.join(subfolder_path, 'imaging-dffTrace_mean_zscored.pkl'), 'rb') as f:
-                    _, _, dffTrace_mean_choice = pickle.load(f)
+                    _, dffTrace_mean_stimuli, dffTrace_mean_choice = pickle.load(f)
+                # Select the correct dictionary
+                if alignment == 'choice':
+                    dffTrace_mean = dffTrace_mean_choice
+                elif alignment == 'stimulus':
+                    dffTrace_mean = dffTrace_mean_stimuli
+                else:
+                    raise ValueError("alignment must be 'choice' or 'stimulus'")
                 # Load stat
                 imData = pd.read_pickle(pathname + 'imaging-data.pkl')
                 stat = imData['stat']
@@ -1609,13 +1636,13 @@ def get_contra_ipsi_diff_cellwise_df(
                 ypix = np.array([np.mean(cell['ypix']) for cell in stat])
                 xpix = np.array([np.mean(cell['xpix']) for cell in stat])
                 # Get means for each cell, matching number of cells
-                contra = dffTrace_mean_choice.get('Choice Contra recordingSide')
-                ipsi = dffTrace_mean_choice.get('Choice Ipsi recordingSide')
+                contra = dffTrace_mean.get(key_contra)
+                ipsi = dffTrace_mean.get(key_ipsi)
                 if contra is not None and ipsi is not None:
                     n_cells = min(len(ypix), contra.shape[0], ipsi.shape[0])
                     ypix = ypix[:n_cells]
                     xpix = xpix[:n_cells]
-                    # Baseline subtraction: baseline window -1 a 0 s 
+                    # Baseline subtraction: baseline window -1 to 0 s 
                     fRate_imaging = 30
                     pre_stim_sec = 2
                     baseline_start_frame = int((-1 + pre_stim_sec) * fRate_imaging)  # 30
@@ -1628,7 +1655,7 @@ def get_contra_ipsi_diff_cellwise_df(
                     diff = mean_contra - mean_ipsi
                     # If responsive_neurons, recalculate the index and filter
                     if subfolder == 'responsive_neurons':
-                        responsive_idx_dict = utils.filter_responsive_neurons(dffTrace_mean_choice, pre_frames, post_frames)
+                        responsive_idx_dict = utils.filter_responsive_neurons(dffTrace_mean, pre_frames, post_frames)
                         # Join all responsive indices
                         responsive_any = None
                         for cond, mask in responsive_idx_dict.items():

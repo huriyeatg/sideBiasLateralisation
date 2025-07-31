@@ -980,12 +980,12 @@ import platform
 class local_analysis:
     def __init__(self, data_path):
         """
-        Inicializa el análisis con datos locales.
+        Initialize analysis with local data.
         
         Args:
-            data_path (str): Ruta al directorio que contiene los archivos PAQ y TIFF
+            data_path (str): Path to directory containing PAQ and TIFF files
         """
-        # Configurar rutas según el sistema
+        # Configure paths according to system
         if platform.node() == 'WIN-AL012':
             print("Computer: Candela Windows")
             self.suite2pOutputPath = data_path
@@ -1006,59 +1006,59 @@ class local_analysis:
         
     def _create_recording_list(self):
         """
-        Crea una lista de grabaciones basada en los archivos PAQ, TIFF, Block.mat y Timeline.mat encontrados.
+        Creates a list of recordings based on PAQ, TIFF, Block.mat and Timeline.mat files found.
         """
-        # Encontrar todos los archivos PAQ en el directorio TwoP
+        # Find all PAQ files in the TwoP directory
         twoP_path = os.path.join(self.data_path, 'TwoP')
         paq_files = glob.glob(os.path.join(twoP_path, "*.paq"))
         
-        # Crear DataFrame para almacenar la información
+        # Create DataFrame to store information
         records = []
         
         for paq_file in paq_files:
-            # Extraer información del nombre del archivo
+            # Extract information from filename
             base_name = os.path.basename(paq_file)
             parts = base_name.split('_')
             
             if len(parts) >= 3:
                 recording_date = parts[0]
                 animal_id = parts[1]
-                recording_id = parts[2].split('_')[0]  # Eliminar '_paq' y extensión
+                recording_id = parts[2].split('_')[0]  # Remove '_paq' and extension
                 
-                # Crear el nombre de la sesión
+                # Create session name
                 session_name = f"{recording_date}_{recording_id}_{animal_id}"
                 
-                # Buscar archivo TIFF correspondiente
+                # Search for corresponding TIFF file
                 tiff_pattern = f"{recording_date}_t-*_Cycle*_Ch2.tif"
                 tiff_files = glob.glob(os.path.join(twoP_path, "**", tiff_pattern), recursive=True)
                 
-                # Buscar archivo Block.mat
+                # Search for Block.mat file
                 block_pattern = f"{recording_date}_{recording_id}_{animal_id}_Block.mat"
                 block_files = glob.glob(os.path.join(self.data_path, block_pattern))
                 
-                # Buscar archivo Timeline.mat
+                # Search for Timeline.mat file
                 timeline_pattern = f"{recording_date}_{recording_id}_{animal_id}_Timeline.mat"
                 timeline_files = glob.glob(os.path.join(self.data_path, timeline_pattern))
                 
-                # Cargar datos del Block.mat si existe
+                # Load Block.mat data if it exists
                 block_data = None
                 if block_files:
                     try:
                         block_data = sio.loadmat(block_files[0])
                     except Exception as e:
-                        print(f"Error al cargar Block.mat: {e}")
+                        print(f"Error loading Block.mat: {e}")
                 
-                # Cargar datos del Timeline.mat si existe
+                # Load Timeline.mat data if it exists
                 timeline_data = None
                 if timeline_files:
                     try:
                         timeline_data = sio.loadmat(timeline_files[0])
                     except Exception as e:
-                        print(f"Error al cargar Timeline.mat: {e}")
+                        print(f"Error loading Timeline.mat: {e}")
                 
-                # Determinar si es una sesión de aprendizaje
+                # Determine if it's a learning session
                 date = datetime.strptime(recording_date, '%Y-%m-%d')
-                learning = False  # Por defecto, no es una sesión de aprendizaje
+                learning = False  # By default, not a learning session
                 
                 record = {
                     'recordingDate': recording_date,
@@ -1067,7 +1067,7 @@ class local_analysis:
                     'sessionName': session_name,
                     'learningData': learning,
                     'path': self.data_path,
-                    'twoP': len(tiff_files) > 0,  # True si existe archivo TIFF
+                    'twoP': len(tiff_files) > 0,  # True if TIFF file exists
                     'paqFileName': paq_file,
                     'imagingTiffFileNames': tiff_files[0] if tiff_files else None,
                     'blockData': block_data,
@@ -1075,40 +1075,40 @@ class local_analysis:
                     'hasBlock': len(block_files) > 0,
                     'hasTimeline': len(timeline_files) > 0,
                     'sessionNameWithPath': os.path.join(self.data_path, f"{session_name}_Block.mat"),
-                    'eventTimesExtracted': 0,  # Inicializar como 0
-                    'eventTimesPath': '',  # Inicializar como string vacío
-                    'variance': np.nan  # Inicializar como NaN
+                    'eventTimesExtracted': 0,  # Initialize as 0
+                    'eventTimesPath': '',  # Initialize as empty string
+                    'variance': np.nan  # Initialize as NaN
                 }
                 records.append(record)
         
-        # Crear DataFrame
+        # Create DataFrame
         df = pd.DataFrame(records)
         
-        # Ordenar por fecha y animal
+        # Sort by date and animal
         if not df.empty:
             df = df.sort_values(['recordingDate', 'animalID'])
             
-            # Añadir rutas de análisis
+            # Add analysis paths
             df['analysispathname'] = np.nan
             df['filepathname'] = np.nan
             
             for ind, recordingDate in enumerate(df.recordingDate):
-                # Crear la ruta del archivo
+                # Create file path
                 filepathname = os.path.join(df.path[ind], df.recordingID[ind])
                 df.loc[ind, 'filepathname'] = filepathname
                 
-                # Crear la ruta de análisis
+                # Create analysis path
                 analysispathname = os.path.join(
                     self.analysisPath,
                     f"{df.recordingDate[ind]}_{df.animalID[ind]}_{df.recordingID[ind]}"
                 )
                 df.loc[ind, 'analysispathname'] = analysispathname + '\\'
                 
-                # Crear el directorio de análisis si no existe
+                # Create analysis directory if it doesn't exist
                 if not os.path.exists(analysispathname):
                     os.makedirs(analysispathname)
                 
-                # Inicializar la ruta del archivo CSV de eventos
+                # Initialize event times path
                 df.loc[ind, 'eventTimesPath'] = os.path.join(
                     analysispathname,
                     f"{df.sessionName[ind]}_CorrectedeventTimes.csv"
@@ -1118,13 +1118,13 @@ class local_analysis:
 
 def get_info(data_path="C:\\Users\\Lak Lab\\Documents\\paqtif\\2025-05-20"):
     """
-    Función auxiliar para obtener el objeto info.
+    Auxiliary function to get the info object.
     
     Args:
-        data_path (str): Ruta al directorio que contiene los archivos PAQ y TIFF
+        data_path (str): Path to directory containing PAQ and TIFF files
         
     Returns:
-        local_analysis: Objeto con la información de las grabaciones
+        local_analysis: Object with the information of the recordings
     """
     return local_analysis(data_path) 
 

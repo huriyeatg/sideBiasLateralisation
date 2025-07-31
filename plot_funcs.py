@@ -11,6 +11,7 @@ import pickle
 import os
 from scipy.stats import ttest_ind
 import itertools
+from collections import defaultdict
 
 
 import os
@@ -1241,8 +1242,8 @@ def plot_individual_cell_traces_by_contrast(dffTrace_stimuli, session_name, save
     return fig
 
 def plot_individual_cell_traces_by_contrast_zscored(dffTrace_stimuli_z, session_name, save_path=None, 
-                                                   figsize=(7.5, 30), n_cols=3, time_window=[-2, 6], baseline_window=None,
-                                                   contrast_conditions=None, contrast_labels=None):
+                                                    figsize=(7.5, 30), n_cols=3, time_window=[-2, 6], baseline_window=None,
+                                                    contrast_conditions=None, contrast_labels=None):
     """
     Plots individual cell traces (z-scored) aligned to stimulus, separated by contrast with viridis colormap.
     Allows baseline subtraction.
@@ -1319,8 +1320,8 @@ def plot_individual_cell_traces_by_contrast_zscored(dffTrace_stimuli_z, session_
     return fig
 
 def plot_single_neuron_traces_by_contrast(dffTrace_stimuli, session_name, save_path=None, 
-                                           time_window=[-2, 6], baseline_window=None,
-                                           contrast_conditions=None, contrast_labels=None, fps=30):
+                                          time_window=[-2, 6], baseline_window=None,
+                                          contrast_conditions=None, contrast_labels=None, fps=30):
     """
     Plot the traces of single neurons for each contrast condition.
     If session_name ends with 'MBL014', use contrast_conditions=['0.5 Rewarded', '0 Rewarded'] and contrast_labels=['0.5 Rewarded', '0 Rewarded'] by default.
@@ -1520,20 +1521,26 @@ def plot_mean_dff_by_contrast(recordingList, event_type='stimulus',
                       label=f'Contrast {contrast_values[i]} (Rewarded)', zorder=2)
     
     # Calculate and plot the global mean and SEM for each contrast
+    # Agrupar por valor numérico de contraste
+    grouped_data = defaultdict(list)
+    for i, contrast in enumerate(contrasts_rewarded):
+        val = contrast_values[i]
+        for d in contrast_data[contrast]:
+            grouped_data[val].append(d['mean_dff'])
+
     means = []
     sems = []
-    for i, contrast in enumerate(contrasts_rewarded):
-        vals = [d['mean_dff'] for d in contrast_data[contrast]]
+    x_vals = []
+    for val in sorted(grouped_data.keys()):
+        vals = grouped_data[val]
         if len(vals) > 0:
             means.append(np.mean(vals))
             sems.append(np.std(vals)/np.sqrt(len(vals)))
-        else:
-            means.append(np.nan)
-            sems.append(np.nan)
-    # Plot the global mean as a short horizontal line (with SEM)
-    for i, (x, m, s) in enumerate(zip(contrast_values, means, sems)):
-        if not np.isnan(m):
-            ax.errorbar(x, m, yerr=s, fmt='_', color='k', elinewidth=3, capsize=7, alpha=0.8, markersize=18, zorder=4)
+            x_vals.append(val)
+    # Plot the global mean as a black line with SEM bars
+    if x_vals:
+        ax.plot(x_vals, means, color='k', linewidth=2, label='Mean across sessions', zorder=5)
+        ax.errorbar(x_vals, means, yerr=sems, fmt='o', color='k', elinewidth=2, capsize=5, alpha=0.8, markersize=6, zorder=6)
     
     # Customize
     ax.set_xlabel('Contrast')
@@ -1891,28 +1898,28 @@ def plot_aligned_by_stim_side_contrasts(
     if contrast_conditions_left is None:
         if alignment == 'reward':
             contrast_conditions_left = [
-                '0 Rewarded Left', '0.0625 Rewarded Left', '0.125 Rewarded Left', '0.25 Rewarded Left', '0.5 Rewarded Left'
+                '-0.0625 Rewarded', '-0.125 Rewarded', '-0.25 Rewarded', '-0.5 Rewarded'
             ]
         elif alignment in ['stimulus', 'stim']:
             contrast_conditions_left = [
-                '0 Rewarded Left', '0.0625 Rewarded Left', '0.125 Rewarded Left', '0.25 Rewarded Left', '0.5 Rewarded Left'
+                '-0.0625 Rewarded', '-0.125 Rewarded', '-0.25 Rewarded', '-0.5 Rewarded'
             ]
         else:  # choice
             contrast_conditions_left = [
-                '0 Choice Left', '0.0625 Choice Left', '0.125 Choice Left', '0.25 Choice Left', '0.5 Choice Left'
+                 '-0.0625 Rewarded', '-0.125 Rewarded', '-0.25 Rewarded', '-0.5 Rewarded'
             ]
     if contrast_conditions_right is None:
         if alignment == 'reward':
             contrast_conditions_right = [
-                '0 Rewarded Right', '0.0625 Rewarded Right', '0.125 Rewarded Right', '0.25 Rewarded Right', '0.5 Rewarded Right'
+                '0.0625 Rewarded', '0.125 Rewarded', '0.25 Rewarded', '0.5 Rewarded'
             ]
         elif alignment in ['stimulus', 'stim']:
             contrast_conditions_right = [
-                '0 Rewarded Right', '0.0625 Rewarded Right', '0.125 Rewarded Right', '0.25 Rewarded Right', '0.5 Rewarded Right'
+                '0.0625 Rewarded', '0.125 Rewarded', '0.25 Rewarded', '0.5 Rewarded'
             ]
         else:  # choice
             contrast_conditions_right = [
-                '0 Choice Right', '0.0625 Choice Right', '0.125 Choice Right', '0.25 Choice Right', '0.5 Choice Right'
+                 '-0.0625 Rewarded', '-0.125 Rewarded', '-0.25 Rewarded', '-0.5 Rewarded'
             ]
     colormap = 'viridis'
     for ind, recordingDate in enumerate(recordingList.recordingDate):
@@ -1925,14 +1932,14 @@ def plot_aligned_by_stim_side_contrasts(
                 continue
             print(f'Plotting {alignment}-aligned activity by stim side for session: {session_name}')
             try:
-                # Ajustar contrast_conditions según el session_name
+                # adjust contrast_conditions according to the session_name
                 if contrast_conditions_left is None or contrast_conditions_right is None:
                     if session_name.endswith('MBL014'):
-                        contrast_conditions_left = ['0.5 Rewarded Left', '0 Rewarded Left']
-                        contrast_conditions_right = ['0.5 Rewarded Right', '0 Rewarded Right']
+                        contrast_conditions_left = ['-0.5 Rewarded']
+                        contrast_conditions_right = ['0.5 Rewarded']
                     else:
-                        contrast_conditions_left = ['0.5 Rewarded Left', '0.25 Rewarded Left', '0.125 Rewarded Left', '0.0625 Rewarded Left', '0 Rewarded Left']
-                        contrast_conditions_right = ['0.5 Rewarded Right', '0.25 Rewarded Right', '0.125 Rewarded Right', '0.0625 Rewarded Right', '0 Rewarded Right']
+                        contrast_conditions_left = ['-0.5 Rewarded', '-0.25 Rewarded', '-0.125 Rewarded', '-0.0625 Rewarded']
+                        contrast_conditions_right = ['0.5 Rewarded', '0.25 Rewarded', '0.125 Rewarded', '0.0625 Rewarded']
                 with open(pickle_file, 'rb') as f:
                     dffTrace_mean_reward, dffTrace_mean_stimuli, dffTrace_mean_choice = pickle.load(f)
                 # Select the correct dictionary
@@ -2171,7 +2178,7 @@ def plot_AP_ML_hemi_contra_ipsi(df, title=None, save_path=None, alignment='choic
     - Red: contra > ipsi (positive diff)
     - Blue: ipsi > contra (negative diff)
     - Size: proportional to |contra_ipsi_diff|
-    alignment: 'choice' o 'stimulus' (se usa en el título y nombre del archivo)
+    alignment: 'choice' or 'stimulus' (used in title and filename)
     """
     import numpy as np
     import matplotlib.pyplot as plt
@@ -2267,7 +2274,7 @@ def plot_mean_dff_by_contrast_hemi_ipsi_contra(
 ):
     """
     Plot mean df/f for a specific time window after an event as a function of contrast, separated by ipsi/contra.
-    Allows passing the contrast conditions as arguments.
+    ipsi and contra data are plotted in separate subplots.
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -2278,8 +2285,8 @@ def plot_mean_dff_by_contrast_hemi_ipsi_contra(
 
     # Time parameters
     fRate_imaging = 30  # Hz
-    pre_stim_sec = 2  # seconds before the stimulus/event
-    total_time = 8  # seconds (for the time axis)
+    pre_stim_sec = 2  # seconds before stimulus/event
+    total_time = 8  # seconds (for time axis)
     n_frames = int(total_time * fRate_imaging)
     time_axis = np.linspace(-pre_stim_sec, total_time - pre_stim_sec, n_frames)
 
@@ -2293,11 +2300,11 @@ def plot_mean_dff_by_contrast_hemi_ipsi_contra(
     if contrast_conditions_contra is None:
         contrast_conditions_contra = ['0.0625 Rewarded Hemi Contra', '0.125 Rewarded Hemi Contra', '0.25 Rewarded Hemi Contra', '0.5 Rewarded Hemi Contra', '0 Rewarded Hemi Contra', '0.0625 Rewarded Hemi Contra', '0.125 Rewarded Hemi Contra', '0.25 Rewarded Hemi Contra', '0.5 Rewarded Hemi Contra']
     contrast_values_ipsi = [-0.0625, -0.125, -0.25, -0.5, 0, 0.0625, 0.125, 0.25, 0.5]
-    contrast_values_contra = [0.0625, 0.125, 0.25, 0.5]
+    contrast_values_contra = [-0.0625, -0.125, -0.25, -0.5, 0, 0.0625, 0.125, 0.25, 0.5]
     colors_ipsi = sns.color_palette('Blues', len(contrast_conditions_ipsi))[::-1]
     colors_contra = sns.color_palette('Reds', len(contrast_conditions_contra))[::-1]
 
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 5), sharey=True)
 
     contrast_data_ipsi = {contrast: [] for contrast in contrast_conditions_ipsi}
     contrast_data_contra = {contrast: [] for contrast in contrast_conditions_contra}
@@ -2370,22 +2377,22 @@ def plot_mean_dff_by_contrast_hemi_ipsi_contra(
             except Exception as e:
                 print(f"Error processing session {session_name}: {str(e)}")
                 continue
-    # Join the points of each session with a dotted line
+    # Plot points from each session with dashed line
     for session_name, (xvals, yvals) in session_points_ipsi.items():
-        ax.plot(xvals, yvals, linestyle='--', color='blue', alpha=0.5, linewidth=1, zorder=1)
+        ax1.plot(xvals, yvals, linestyle='--', color='blue', alpha=0.5, linewidth=1, zorder=1)
     for session_name, (xvals, yvals) in session_points_contra.items():
-        ax.plot(xvals, yvals, linestyle='--', color='red', alpha=0.5, linewidth=1, zorder=1)
+        ax2.plot(xvals, yvals, linestyle='--', color='red', alpha=0.5, linewidth=1, zorder=1)
     # Plot individual points by contrast
     for i, contrast in enumerate(contrast_conditions_ipsi):
         if contrast_data_ipsi[contrast]:
             df_contrast = pd.DataFrame(contrast_data_ipsi[contrast])
-            ax.scatter(df_contrast['contrast'], df_contrast['mean_dff'],
+            ax1.scatter(df_contrast['contrast'], df_contrast['mean_dff'],
                       color=colors_ipsi[i], alpha=0.7, s=50,
                       label=f'Ipsi {contrast_values_ipsi[i]}', zorder=2)
     for i, contrast in enumerate(contrast_conditions_contra):
         if contrast_data_contra[contrast]:
             df_contrast = pd.DataFrame(contrast_data_contra[contrast])
-            ax.scatter(df_contrast['contrast'], df_contrast['mean_dff'],
+            ax2.scatter(df_contrast['contrast'], df_contrast['mean_dff'],
                       color=colors_contra[i], alpha=0.7, s=50,
                       label=f'Contra {contrast_values_contra[i]}', zorder=2)
     # Global mean and SEM
@@ -2411,23 +2418,37 @@ def plot_mean_dff_by_contrast_hemi_ipsi_contra(
             sems_contra.append(np.nan)
     for i, (x, m, s) in enumerate(zip(contrast_values_ipsi, means_ipsi, sems_ipsi)):
         if not np.isnan(m):
-            ax.errorbar(x, m, yerr=s, fmt='_', color='blue', elinewidth=3, capsize=7, alpha=0.8, markersize=18, zorder=4)
+            ax1.errorbar(x, m, yerr=s, fmt='_', color='blue', elinewidth=3, capsize=7, alpha=0.8, markersize=18, zorder=4)
     for i, (x, m, s) in enumerate(zip(contrast_values_contra, means_contra, sems_contra)):
         if not np.isnan(m):
-            ax.errorbar(x, m, yerr=s, fmt='_', color='red', elinewidth=3, capsize=7, alpha=0.8, markersize=18, zorder=4)
-    ax.set_xlabel('Contrast')
-    ax.set_ylabel(f'Mean df/f')
-    if title is None:
-        title = f'Mean df/f by contrast ({time_window[0]}-{time_window[1]}s post-{event_type}) - Ipsi vs Contra - {subfolder} (baseline subtracted)'
-    ax.set_title(title, y=1.04, fontsize=14)
-    ax.set_xscale('linear')
-    ax.set_xticks(contrast_values_ipsi + contrast_values_contra)
-    ax.set_xticklabels([str(c) for c in contrast_values_ipsi + contrast_values_contra])
+            ax2.errorbar(x, m, yerr=s, fmt='_', color='red', elinewidth=3, capsize=7, alpha=0.8, markersize=18, zorder=4)
+    # Labels and titles
+    ax1.set_xlabel('Contrast')
+    ax1.set_ylabel(f'Mean df/f')
+    ax1.set_title('Ipsi', fontsize=14)
+    ax1.set_xscale('linear')
+    ax1.set_xticks(contrast_values_ipsi)
+    ax1.set_xticklabels([str(c) for c in contrast_values_ipsi])
     import matplotlib.pyplot as plt
-    plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
-    ax.grid(True, alpha=0.3)
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout()
+    plt.setp(ax1.get_xticklabels(), rotation=45, ha='right')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    ax2.set_xlabel('Contrast')
+    ax2.set_ylabel(f'Mean df/f')
+    ax2.set_title('Contra', fontsize=14)
+    ax2.set_xscale('linear')
+    ax2.set_xticks(contrast_values_contra)
+    ax2.set_xticklabels([str(c) for c in contrast_values_contra])
+    plt.setp(ax2.get_xticklabels(), rotation=45, ha='right')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    if title is not None:
+        fig.suptitle(title, y=1.04, fontsize=16)
+    else:
+        fig.suptitle(f'Mean df/f by contrast ({time_window[0]}-{time_window[1]}s post-{event_type}) - Ipsi vs Contra - {subfolder} (baseline subtracted)', y=1.04, fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
     if save_path is not None:
         save_figureAll(f'mean_dff_by_contrast_hemi_ipsi_contra_{event_type}_{subfolder}_baseline', save_path)
     plt.close(fig)
@@ -2445,10 +2466,8 @@ def plot_mean_dff_by_contrast_bias_ipsi_contra(
     title=None
 ):
     """
-    Plot the mean df/f for each contrast, separated into two subplots:
-    - Left: Rewarded Bias Ipsi
-    - Right: Rewarded Bias Contra
-    Allows customization of contrast labels and arguments as in plot_mean_dff_by_contrast.
+    Plot the mean df/f for each contrast, collapsed into 5 absolute values (0, 0.0625, 0.125, 0.25, 0.5),
+    combining positive and negative values into the same group, for bias ipsi and bias contra.
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -2457,18 +2476,29 @@ def plot_mean_dff_by_contrast_bias_ipsi_contra(
     import pickle
     import os
 
-    # Default contrasts if not provided
+    # Define absolute contrast values
+    abs_contrast_values = [0, 0.0625, 0.125, 0.25, 0.5]
+    abs_contrast_labels = [str(c) for c in abs_contrast_values]
+    contrast_colors = sns.color_palette('viridis', len(abs_contrast_values))[::-1]
+
+    # Default conditions if not provided
     if contrast_conditions_bias is None:
         contrast_conditions_bias = [
+            '-0.0625 Rewarded Bias Ipsi', '-0.125 Rewarded Bias Ipsi', '-0.25 Rewarded Bias Ipsi', '-0.5 Rewarded Bias Ipsi',
             '0 Rewarded Bias Ipsi', '0.0625 Rewarded Bias Ipsi', '0.125 Rewarded Bias Ipsi', '0.25 Rewarded Bias Ipsi', '0.5 Rewarded Bias Ipsi'
         ]
     if contrast_conditions_nobias is None:
         contrast_conditions_nobias = [
+            '-0.0625 Rewarded Bias Contra', '-0.125 Rewarded Bias Contra', '-0.25 Rewarded Bias Contra', '-0.5 Rewarded Bias Contra',
             '0 Rewarded Bias Contra', '0.0625 Rewarded Bias Contra', '0.125 Rewarded Bias Contra', '0.25 Rewarded Bias Contra', '0.5 Rewarded Bias Contra'
         ]
-    contrast_values = [0.0, 0.0625, 0.125, 0.25, 0.5]
-    contrast_labels = [str(c) for c in contrast_values]
-    contrast_colors = sns.color_palette('viridis', len(contrast_values))[::-1]
+
+    # Map each condition to its absolute contrast value
+    def get_abs_contrast(cond):
+        for val in abs_contrast_values:
+            if cond.startswith(f'{val} ') or cond.startswith(f'-{val} '):
+                return val
+        return None
 
     # Create figure
     fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
@@ -2477,10 +2507,9 @@ def plot_mean_dff_by_contrast_bias_ipsi_contra(
         (axes[1], contrast_conditions_nobias, 'Bias Contra')
     ]
 
-    # For connecting points of each session
+    # Store collapsed data by absolute value
+    abs_contrast_data = {'Bias Ipsi': {v: [] for v in abs_contrast_values}, 'Bias Contra': {v: [] for v in abs_contrast_values}}
     session_points = {'Bias Ipsi': {}, 'Bias Contra': {}}
-    # To store data by contrast
-    contrast_data = {'Bias Ipsi': {c: [] for c in contrast_conditions_bias}, 'Bias Contra': {c: [] for c in contrast_conditions_nobias}}
 
     # Process each session
     for ind, recordingDate in enumerate(recordingList.recordingDate):
@@ -2490,14 +2519,12 @@ def plot_mean_dff_by_contrast_bias_ipsi_contra(
             pathname = recordingList.analysispathname[ind]
             subfolder_path = os.path.join(pathname, subfolder)
             try:
-                # Load data
                 if use_zscored:
                     pkl_name = 'imaging-dffTrace_mean_zscored.pkl'
                 else:
                     pkl_name = 'imaging-dffTrace_mean.pkl'
                 with open(os.path.join(subfolder_path, pkl_name), 'rb') as f:
                     dffTrace_mean_reward, dffTrace_mean_stimuli, dffTrace_mean_choice = pickle.load(f)
-                # Select the appropriate dictionary
                 if event_type.lower() == 'stimulus':
                     dffTrace_mean = dffTrace_mean_stimuli
                 elif event_type.lower() == 'choice':
@@ -2506,61 +2533,65 @@ def plot_mean_dff_by_contrast_bias_ipsi_contra(
                     dffTrace_mean = dffTrace_mean_reward
                 else:
                     raise ValueError("event_type must be 'stimulus', 'choice', or 'reward'")
+                # IPSI
                 session_contrasts_ipsi = []
                 session_means_ipsi = []
-                session_contrasts_contra = []
-                session_means_contra = []
-                for i, contrast in enumerate(contrast_conditions_bias):
-                    if contrast in dffTrace_mean and dffTrace_mean[contrast] is not None:
-                        mean_dff = np.nanmean(dffTrace_mean[contrast])
-                        contrast_data['Bias Ipsi'][contrast].append({'animal': animal_id, 'session': session_name, 'mean_dff': mean_dff, 'contrast': contrast_values[i]})
-                        session_contrasts_ipsi.append(contrast_values[i])
+                for cond in contrast_conditions_bias:
+                    abs_val = get_abs_contrast(cond)
+                    if abs_val is not None and cond in dffTrace_mean and dffTrace_mean[cond] is not None:
+                        mean_dff = np.nanmean(dffTrace_mean[cond])
+                        abs_contrast_data['Bias Ipsi'][abs_val].append({'animal': animal_id, 'session': session_name, 'mean_dff': mean_dff, 'contrast': abs_val})
+                        session_contrasts_ipsi.append(abs_val)
                         session_means_ipsi.append(mean_dff)
-                for i, contrast in enumerate(contrast_conditions_nobias):
-                    if contrast in dffTrace_mean and dffTrace_mean[contrast] is not None:
-                        mean_dff = np.nanmean(dffTrace_mean[contrast])
-                        contrast_data['Bias Contra'][contrast].append({'animal': animal_id, 'session': session_name, 'mean_dff': mean_dff, 'contrast': contrast_values[i]})
-                        session_contrasts_contra.append(contrast_values[i])
-                        session_means_contra.append(mean_dff)
                 if len(session_contrasts_ipsi) > 1:
                     session_points['Bias Ipsi'][session_name] = (session_contrasts_ipsi, session_means_ipsi)
+                # CONTRA
+                session_contrasts_contra = []
+                session_means_contra = []
+                for cond in contrast_conditions_nobias:
+                    abs_val = get_abs_contrast(cond)
+                    if abs_val is not None and cond in dffTrace_mean and dffTrace_mean[cond] is not None:
+                        mean_dff = np.nanmean(dffTrace_mean[cond])
+                        abs_contrast_data['Bias Contra'][abs_val].append({'animal': animal_id, 'session': session_name, 'mean_dff': mean_dff, 'contrast': abs_val})
+                        session_contrasts_contra.append(abs_val)
+                        session_means_contra.append(mean_dff)
                 if len(session_contrasts_contra) > 1:
                     session_points['Bias Contra'][session_name] = (session_contrasts_contra, session_means_contra)
             except Exception as e:
                 print(f"Error processing session {session_name}: {str(e)}")
                 continue
 
-    # Plotting
-    for ax, conds, group_name in subplot_info:
+    # Plot
+    for ax, _, group_name in subplot_info:
         # Connect points of each session
         for session_name, (xvals, yvals) in session_points[group_name].items():
             ax.plot(xvals, yvals, linestyle='--', color='gray', alpha=0.5, linewidth=1, zorder=1)
-        # Individual points per contrast
-        for i, contrast in enumerate(conds):
-            if contrast_data[group_name][contrast]:
-                df_contrast = pd.DataFrame(contrast_data[group_name][contrast])
+        # Individual points per absolute contrast
+        for i, abs_val in enumerate(abs_contrast_values):
+            if abs_contrast_data[group_name][abs_val]:
+                df_contrast = pd.DataFrame(abs_contrast_data[group_name][abs_val])
                 ax.scatter(df_contrast['contrast'], df_contrast['mean_dff'], 
                           color=contrast_colors[i], alpha=0.7, s=50, 
-                          label=f'Contrast {contrast_labels[i]}', zorder=2)
+                          label=f'Contrast {abs_contrast_labels[i]}', zorder=2)
         # Global mean and SEM
         means = []
         sems = []
-        for i, contrast in enumerate(conds):
-            vals = [d['mean_dff'] for d in contrast_data[group_name][contrast]]
+        for abs_val in abs_contrast_values:
+            vals = [d['mean_dff'] for d in abs_contrast_data[group_name][abs_val]]
             if len(vals) > 0:
                 means.append(np.mean(vals))
                 sems.append(np.std(vals)/np.sqrt(len(vals)))
             else:
                 means.append(np.nan)
                 sems.append(np.nan)
-        for i, (x, m, s) in enumerate(zip(contrast_values, means, sems)):
+        for i, (x, m, s) in enumerate(zip(abs_contrast_values, means, sems)):
             if not np.isnan(m):
                 ax.errorbar(x, m, yerr=s, fmt='_', color='k', elinewidth=3, capsize=7, alpha=0.8, markersize=18, zorder=4)
-        ax.set_xlabel('Contrast')
+        ax.set_xlabel('Contrast (absolute value)')
         ax.set_title(f'Rewarded {group_name}')
         ax.set_xscale('linear')
-        ax.set_xticks(contrast_values)
-        ax.set_xticklabels([str(c) for c in contrast_values])
+        ax.set_xticks(abs_contrast_values)
+        ax.set_xticklabels(abs_contrast_labels)
         import matplotlib.pyplot as plt
         plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
         ax.grid(True, alpha=0.3)
@@ -2568,10 +2599,10 @@ def plot_mean_dff_by_contrast_bias_ipsi_contra(
     axes[0].set_ylabel(f'Mean df/f')
     plt.tight_layout()
     if title is None:
-        title = f'Mean df/f by contrast ({time_window[0]}-{time_window[1]}s post-{event_type}) - Rewarded trials - {subfolder} (baseline subtracted)'
+        title = f'Mean df/f by absolute contrast ({time_window[0]}-{time_window[1]}s post-{event_type}) - Rewarded trials - {subfolder} (baseline subtracted)'
     fig.suptitle(title, y=1.04, fontsize=14)
     if save_path is not None:
-        save_figureAll(f'mean_dff_by_contrast_rewarded_{event_type}_{time_window[0]}_{time_window[1]}s_{subfolder}_bias_ipsi_vs_contra.png', save_path)
+        save_figureAll(f'mean_dff_by_contrast_rewarded_{event_type}_{time_window[0]}_{time_window[1]}s_{subfolder}_bias_ipsi_vs_contra_abs', save_path)
         plt.close(fig)
     else:
         plt.show()
@@ -2600,11 +2631,11 @@ def plot_mean_sem_across_sessions_by_stim_side(
         # Default contrast conditions if not provided
     if contrast_conditions_left is None:
         contrast_conditions_left = [
-            '0.5 Rewarded Left', '0.25 Rewarded Left', '0.125 Rewarded Left', '0.0625 Rewarded Left', '0 Rewarded Left'
+            '-0.0625 Rewarded', '-0.125 Rewarded', '-0.25 Rewarded', '-0.5 Rewarded'
         ]
     if contrast_conditions_right is None:
         contrast_conditions_right = [
-            '0.5 Rewarded Right', '0.25 Rewarded Right', '0.125 Rewarded Right', '0.0625 Rewarded Right', '0 Rewarded Right'
+            '0.0625 Rewarded', '0.125 Rewarded', '0.25 Rewarded', '0.5 Rewarded'
         ]
     colormap = 'viridis'
     colors_left = sns.color_palette(colormap, len(contrast_conditions_left))
@@ -2858,6 +2889,8 @@ def plot_peak_window_mean_dff_by_contrast(
         else:
             means.append(np.nan)
             sems.append(np.nan)
+    # Black line connecting the mean points, only one label for the legend
+    ax.plot(contrast_values, means, color='k', linewidth=2, zorder=3, label='Mean')
     for i, (x, m, s) in enumerate(zip(contrast_values, means, sems)):
         if not np.isnan(m):
             ax.errorbar(x, m, yerr=s, fmt='_', color='k', elinewidth=3, capsize=7, alpha=0.8, markersize=18, zorder=4)
@@ -2872,7 +2905,17 @@ def plot_peak_window_mean_dff_by_contrast(
     import matplotlib.pyplot as plt
     plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
     ax.grid(True, alpha=0.3)
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    # Only one 'Mean' in the legend
+    handles, labels = ax.get_legend_handles_labels()
+    new_handles = []
+    new_labels = []
+    seen = set()
+    for h, l in zip(handles, labels):
+        if l not in seen:
+            new_handles.append(h)
+            new_labels.append(l)
+            seen.add(l)
+    ax.legend(new_handles, new_labels, bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.tight_layout()
     if save_path is not None:
         save_figureAll(f'peak_window_mean_dff_by_contrast_rewarded_{event_type}_{subfolder}_baseline', save_path)
@@ -2883,12 +2926,12 @@ def plot_reward_aligned_stim_ipsi_contra_diff_across_sessions(
     recordingList,
     subfolder='responsive_neurons',
     save_path=None,
-    key_type='hemi'  # 'hemi' (default) o 'bias'
+    key_type='hemi'  # 'hemi' (default) or 'bias'
 ):
     """
     Plot the mean and SEM across sessions of the difference (rewarded - unrewarded) for:
-    - 'Stim Hemi Ipsi' y 'Stim Hemi Contra' (key_type='hemi')
-    - 'Stim Bias Ipsi' y 'Stim Bias Contra' (key_type='bias')
+    - 'Stim Hemi Ipsi' and 'Stim Hemi Contra' (key_type='hemi')
+    - 'Stim Bias Ipsi' and 'Stim Bias Contra' (key_type='bias')
     Both curves are shown in a single plot, with SEM bands.
     The x-axis is labeled 'Time from reward (s)'.
     """
@@ -2968,10 +3011,10 @@ def plot_reward_aligned_stim_ipsi_contra_diff_scatter_window_across_sessions(
     time_window=[0.1, 0.8],
     subfolder='responsive_neurons',
     save_path=None,
-    key_type='hemi'  # 'hemi' (default) o 'bias'
+    key_type='hemi'  # 'hemi' (default) or 'bias'
 ):
     """
-    For each session and condition (Stim Hemi Ipsi/Contra o Stim Bias Ipsi/Contra), calculate the mean of the curve (rewarded-unrewarded)
+    For each session and condition (Stim Hemi Ipsi/Contra or Stim Bias Ipsi/Contra), calculate the mean of the curve (rewarded-unrewarded)
     in the specified time window and plot:
     - Individual points of each session
     - Mean and SEM as errorbar
@@ -3116,7 +3159,7 @@ def plot_aligned_by_contrasts(
                     print(f"Unknown alignment: {alignment}")
                     continue
 
-                # Condiciones por defecto
+                # Default conditions
                 if contrast_conditions is None:
                     if alignment == 'reward':
                         contrast_conditions = [
@@ -3131,7 +3174,7 @@ def plot_aligned_by_contrasts(
                             '0 Choice', '0.0625 Choice', '0.125 Choice', '0.25 Choice', '0.5 Choice'
                         ]
 
-                # Eje temporal
+                # Time axis
                 fRate = 30
                 pre_stim_sec = 2
                 total_time = 8
@@ -4128,7 +4171,7 @@ def plot_event_aligned_stim_bias_diff_by_contrast_scatter_window_across_sessions
     import os
     from scipy.stats import f_oneway, ttest_ind
 
-    # Eje temporal
+    # Time axis
     fRate = 30
     pre_stim_sec = 2
     total_time = 8
@@ -4137,7 +4180,7 @@ def plot_event_aligned_stim_bias_diff_by_contrast_scatter_window_across_sessions
     start_idx = int((time_window[0] + pre_stim_sec) * fRate)
     end_idx = int((time_window[1] + pre_stim_sec) * fRate)
 
-    # Contrastes y claves
+    # Contrasts and keys
     contrasts = ['-0.0625', '-0.125', '-0.25', '-0.5', '0', '0.0625', '0.125', '0.25', '0.5']
     contrast_labels = ['-0.0625', '-0.125', '-0.25', '-0.5', '0', '0.0625', '0.125', '0.25', '0.5']
     if alignment.lower() == 'reward':
@@ -4150,7 +4193,7 @@ def plot_event_aligned_stim_bias_diff_by_contrast_scatter_window_across_sessions
         key_ipsi = {c: f'{c} Rewarded Bias Ipsi' for c in contrasts}
         key_contra = {c: f'{c} Rewarded Bias Contra' for c in contrasts}
 
-    # Acumular resultados
+    # Accumulate results
     window_means_by_contrast = {c: [] for c in contrasts}
     for ind, recordingDate in enumerate(recordingList.recordingDate):
         if recordingList.imagingDataExtracted[ind] == 1:
@@ -4182,7 +4225,7 @@ def plot_event_aligned_stim_bias_diff_by_contrast_scatter_window_across_sessions
                     diff = window_mean_ipsi - window_mean_contra
                     window_means_by_contrast[c].append(diff)
 
-    # Gráfico
+    # Plot
     fig, ax = plt.subplots(figsize=(10, 6))
     xvals = np.arange(len(contrasts))
     colors = plt.cm.viridis(np.linspace(0, 1, len(contrasts)))
@@ -4206,7 +4249,7 @@ def plot_event_aligned_stim_bias_diff_by_contrast_scatter_window_across_sessions
     ax.set_xlim(-0.5, len(contrasts)-0.5)
     ax.set_ylabel(f'Ipsi - Contra df/f [{time_window[0]}, {time_window[1]}] s')
     ax.set_xlabel('Contrast')
-    # Estadística
+    # Statistics
     valid_vals = [vals for vals in all_vals if len(vals) > 1]
     if len(valid_vals) >= 2:
         f_stat, p_val = f_oneway(*valid_vals)
@@ -4558,3 +4601,161 @@ def plot_reward_aligned_rewarded_vs_unrewarded_across_sessions(
         plt.close(fig)
     else:
         plt.show()
+
+def plot_mean_dff_by_contrast_hemi_bias_4panels(
+    recordingList,
+    event_type='stimulus',
+    time_window=[0.1, 0.8],
+    subfolder='responsive_neurons',
+    save_path=None,
+    keys_hemi_ipsi_bias_ipsi=None,
+    keys_hemi_ipsi_bias_contra=None,
+    keys_hemi_contra_bias_ipsi=None,
+    keys_hemi_contra_bias_contra=None,
+    use_zscored=True,
+    title=None
+):
+    """
+    Plot the mean df/f for each contrast, collapsed into 5 absolute values (0, 0.0625, 0.125, 0.25, 0.5),
+    for 4 groups (Hemi Ipsi - Bias Ipsi, Hemi Ipsi - Bias Contra, Hemi Contra - Bias Ipsi, Hemi Contra - Bias Contra),
+    each in its own subplot (2x2).
+    By default, uses the keys provided by the user.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import seaborn as sns
+    import pickle
+    import os
+
+    abs_contrast_values = [0, 0.0625, 0.125, 0.25, 0.5]
+    abs_contrast_labels = [str(c) for c in abs_contrast_values]
+    contrast_colors = sns.color_palette('viridis', len(abs_contrast_values))[::-1]
+
+    # Default keys from user
+    if keys_hemi_ipsi_bias_ipsi is None:
+        keys_hemi_ipsi_bias_ipsi = [
+            '-0.0625 Rewarded Hemi Ipsi Bias Ipsi','-0.125 Rewarded Hemi Ipsi Bias Ipsi', '-0.25 Rewarded Hemi Ipsi Bias Ipsi', '-0.5 Rewarded Hemi Ipsi Bias Ipsi',
+            '0.0625 Rewarded Hemi Ipsi Bias Ipsi','0.125 Rewarded Hemi Ipsi Bias Ipsi', '0.25 Rewarded Hemi Ipsi Bias Ipsi', '0.5 Rewarded Hemi Ipsi Bias Ipsi', '0 Rewarded Hemi Ipsi Bias Ipsi'
+        ]
+    if keys_hemi_ipsi_bias_contra is None:
+        keys_hemi_ipsi_bias_contra = [
+            '-0.0625 Rewarded Hemi Ipsi Bias Contra','-0.125 Rewarded Hemi Ipsi Bias Contra', '-0.25 Rewarded Hemi Ipsi Bias Contra', '-0.5 Rewarded Hemi Ipsi Bias Contra',
+            '0.0625 Rewarded Hemi Ipsi Bias Contra','0.125 Rewarded Hemi Ipsi Bias Contra', '0.25 Rewarded Hemi Ipsi Bias Contra', '0.5 Rewarded Hemi Ipsi Bias Contra', '0 Rewarded Hemi Ipsi Bias Contra'
+        ]
+    if keys_hemi_contra_bias_ipsi is None:
+        keys_hemi_contra_bias_ipsi = [
+            '-0.0625 Rewarded Hemi Contra Bias Ipsi','-0.125 Rewarded Hemi Contra Bias Ipsi', '-0.25 Rewarded Hemi Contra Bias Ipsi', '-0.5 Rewarded Hemi Contra Bias Ipsi',
+            '0.0625 Rewarded Hemi Contra Bias Ipsi','0.125 Rewarded Hemi Contra Bias Ipsi', '0.25 Rewarded Hemi Contra Bias Ipsi', '0.5 Rewarded Hemi Contra Bias Ipsi', '0 Rewarded Hemi Contra Bias Ipsi'
+        ]
+    if keys_hemi_contra_bias_contra is None:
+        keys_hemi_contra_bias_contra = [
+            '-0.0625 Rewarded Hemi Contra Bias Contra','-0.125 Rewarded Hemi Contra Bias Contra', '-0.25 Rewarded Hemi Contra Bias Contra', '-0.5 Rewarded Hemi Contra Bias Contra',
+            '0.0625 Rewarded Hemi Contra Bias Contra','0.125 Rewarded Hemi Contra Bias Contra', '0.25 Rewarded Hemi Contra Bias Contra', '0.5 Rewarded Hemi Contra Bias Contra', '0 Rewarded Hemi Contra Bias Contra'
+        ]
+
+    group_keys = [
+        (keys_hemi_ipsi_bias_ipsi, 'Hemi Ipsi - Bias Ipsi'),
+        (keys_hemi_ipsi_bias_contra, 'Hemi Ipsi - Bias Contra'),
+        (keys_hemi_contra_bias_ipsi, 'Hemi Contra - Bias Ipsi'),
+        (keys_hemi_contra_bias_contra, 'Hemi Contra - Bias Contra')
+    ]
+
+    def get_abs_contrast(cond):
+        for val in abs_contrast_values:
+            if cond.startswith(f'{val} ') or cond.startswith(f'-{val} '):
+                return val
+        return None
+
+    # Prepare data structure
+    abs_contrast_data = {name: {v: [] for v in abs_contrast_values} for _, name in group_keys}
+    session_points = {name: {} for _, name in group_keys}
+
+    # Process each session
+    for ind, recordingDate in enumerate(recordingList.recordingDate):
+        if recordingList.imagingDataExtracted[ind] == 1:
+            animal_id = recordingList.animalID[ind]
+            session_name = recordingList.sessionName[ind]
+            pathname = recordingList.analysispathname[ind]
+            subfolder_path = os.path.join(pathname, subfolder)
+            try:
+                if use_zscored:
+                    pkl_name = 'imaging-dffTrace_mean_zscored.pkl'
+                else:
+                    pkl_name = 'imaging-dffTrace_mean.pkl'
+                with open(os.path.join(subfolder_path, pkl_name), 'rb') as f:
+                    dffTrace_mean_reward, dffTrace_mean_stimuli, dffTrace_mean_choice = pickle.load(f)
+                if event_type.lower() == 'stimulus':
+                    dffTrace_mean = dffTrace_mean_stimuli
+                elif event_type.lower() == 'choice':
+                    dffTrace_mean = dffTrace_mean_choice
+                elif event_type.lower() == 'reward':
+                    dffTrace_mean = dffTrace_mean_reward
+                else:
+                    raise ValueError("event_type must be 'stimulus', 'choice', or 'reward'")
+                for keys, group_name in group_keys:
+                    session_contrasts = []
+                    session_means = []
+                    for cond in keys:
+                        abs_val = get_abs_contrast(cond)
+                        if abs_val is not None and cond in dffTrace_mean and dffTrace_mean[cond] is not None:
+                            mean_dff = np.nanmean(dffTrace_mean[cond])
+                            abs_contrast_data[group_name][abs_val].append({'animal': animal_id, 'session': session_name, 'mean_dff': mean_dff, 'contrast': abs_val})
+                            session_contrasts.append(abs_val)
+                            session_means.append(mean_dff)
+                    if len(session_contrasts) > 1:
+                        session_points[group_name][session_name] = (session_contrasts, session_means)
+            except Exception as e:
+                print(f"Error processing session {session_name}: {str(e)}")
+                continue
+
+    # Plot
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8), sharey=True)
+    axes = axes.flatten()
+    for idx, (keys, group_name) in enumerate(group_keys):
+        ax = axes[idx]
+        # Connect points of each session
+        for session_name, (xvals, yvals) in session_points[group_name].items():
+            ax.plot(xvals, yvals, linestyle='--', color='gray', alpha=0.5, linewidth=1, zorder=1)
+        # Individual points per absolute contrast
+        for i, abs_val in enumerate(abs_contrast_values):
+            if abs_contrast_data[group_name][abs_val]:
+                df_contrast = pd.DataFrame(abs_contrast_data[group_name][abs_val])
+                ax.scatter(df_contrast['contrast'], df_contrast['mean_dff'], 
+                          color=contrast_colors[i], alpha=0.7, s=50, 
+                          label=f'Contrast {abs_contrast_labels[i]}', zorder=2)
+        # Global mean and SEM
+        means = []
+        sems = []
+        for abs_val in abs_contrast_values:
+            vals = [d['mean_dff'] for d in abs_contrast_data[group_name][abs_val]]
+            if len(vals) > 0:
+                means.append(np.mean(vals))
+                sems.append(np.std(vals)/np.sqrt(len(vals)))
+            else:
+                means.append(np.nan)
+                sems.append(np.nan)
+        for i, (x, m, s) in enumerate(zip(abs_contrast_values, means, sems)):
+            if not np.isnan(m):
+                ax.errorbar(x, m, yerr=s, fmt='_', color='k', elinewidth=3, capsize=7, alpha=0.8, markersize=18, zorder=4)
+        ax.set_xlabel('Contrast (absolute value)')
+        ax.set_title(group_name)
+        ax.set_xscale('linear')
+        ax.set_xticks(abs_contrast_values)
+        ax.set_xticklabels(abs_contrast_labels)
+        import matplotlib.pyplot as plt
+        plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+        ax.grid(True, alpha=0.3)
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    axes[0].set_ylabel(f'Mean df/f')
+    axes[2].set_ylabel(f'Mean df/f')
+    plt.tight_layout()
+    if title is None:
+        title = f'Mean df/f by absolute contrast ({time_window[0]}-{time_window[1]}s post-{event_type}) - 4 groups (Hemi/Bias) - {subfolder} (baseline subtracted)'
+    fig.suptitle(title, y=1.02, fontsize=15)
+    if save_path is not None:
+        save_figureAll(f'mean_dff_by_contrast_hemi_bias_4panels_{event_type}_{time_window[0]}_{time_window[1]}s_{subfolder}', save_path)
+        plt.close(fig)
+    else:
+        plt.show()
+    return fig

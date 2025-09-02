@@ -1,23 +1,30 @@
 # Functions used more globally
 import platform
-import os
+import sys, os, json, math, time, yaml
+from xml.etree.ElementPath import ops
+from pathlib import Path
 import pandas as pd
 import numpy as np
-import tifffile
 #import plot_funcs as pfun
 import utils_funcs as utils
 from datetime import datetime
 import re
 import pickle
 import glob
-from statsmodels.stats.multitest import fdrcorrection
-#if os.environ['CONDA_DEFAULT_ENV'] == 'decision-making-ev':
-print('Env: ' + os.environ['CONDA_DEFAULT_ENV'])
+import scipy.io as sio
+from tifffile import imread
+import imageio.v2 as imageio
+import xml.etree.ElementTree as ET
+from suite2p.run_s2p import run_s2p
+from typing import Optional
+import os
+import cupy
 
 
 class analysis:
     
-    def __init__(self):
+    def __init__(self, animalList=None):
+        print('Env: ' + os.environ['CONDA_DEFAULT_ENV'])
         
         if platform.node() == 'macOS-12.6-arm64-arm-64bit':
             # for Windows - Huriye PC
@@ -26,19 +33,13 @@ class analysis:
             self.recordingListPath = "/Users/Huriye/Documents/Code/decision-making-ev/"
             self.rawPath           = 'N/A' # this folder is only avaiable with PC  
             self.rootPath          = "/Users/Huriye/Documents/Code/decision-making-ev/"
-        elif  platform.node() == 'WIN-AL015':        
-            print("Computer: Orsi Windows")   # for Windows - Orsi PC
-            self.suite2pOutputPath = 'X:\\Data\\decision-making-ev\\suite2p-output\\' 
-            self.recordingListPath = "C:\\Users\\Lak Lab\\Documents\\Code\\decision-making-ev\\"
-            self.rawPath           = 'W:\\' # this folder is only avaiable with PC  
-            self.rootPath          = "C:\\Users\\Lak Lab\\Documents\\Code\\decision-making-ev\\"
         elif platform.node() == 'WIN-AMP016':
             print("Computer: Huriye Windows")
             # for Windows - Huriye PC
-            self.suite2pOutputPath = 'X:\\Data\\decision-making-ev\\suite2p_output\\' 
-            self.recordingListPath = "C:\\Users\\Huriye\\Documents\\code\\decision-making-ev\\"
-            self.rawPath           = 'Z:\\' # "D:\\decision-making-ev\\Data\\" #
-            self.rootPath          = "C:\\Users\\Huriye\\Documents\\code\\decision-making-ev\\"
+            self.suite2pOutputPath = 'C:\\Users\\Huriye\\Documents\\code\\sideBiasLateralisation\\suite2p_output\\' 
+            self.recordingListPath = "C:\\Users\\Huriye\\Documents\\code\\sideBiasLateralisation\\"
+            self.rawPath           = 'Z:\\' 
+            self.rootPath          = "C:\\Users\\Huriye\\Documents\\code\\sideBiasLateralisation\\"
         elif platform.node() == 'WIN-AL012':
             print("Computer: Candela Windows")
             # for Windows - Huriye PC
@@ -50,102 +51,118 @@ class analysis:
             print('Computer setting is not set.')
         self.analysisPath = os.path.join(self.rootPath, 'analysis') # 'D:\\decision-making-ev\\analysis' # 
         self.figsPath     = os.path.join(self.rootPath, 'figs')
+        self.ops_suite2pPath = os.path.join(self.rootPath, 'ops_suite2p.json')
+        self.ops_yaml_path = os.path.join(self.rootPath, 'ops_suite2p.yaml')
         #self.DLCconfigPath = os.path.join(self.rootPath, 'pupilExtraction', 'Updated 5 Dot Training Model-Eren CAN-2021-11-21')
         #self.DLCconfigPath = self.DLCconfigPath + '\\config.yaml'
         
         # Create the list 
         info = pd.DataFrame()
         # Recursively search for files ending with 'Block.mat' in all subfolders
-        animalList = ['MBL015', 'MBL014']
+        if animalList is None:
+            animalList = ['MBL015', 'MBL014']
+            print('No animal ID is given, so all animals will be processed: ' + str(animalList))
         badRecordingSessions = ['2023-07-07_1_OFZ008_Block.mat', '2023-07-07_3_OFZ008_Block.mat', # Not good ROIs
-                                '2023-07-11_1_OFZ008_Block.mat', '2023-07-13_2_OFZ008_Block.mat', # Not good ROIs
-                                '2023-06-13_1_OFZ009_Block.mat', '2023-07-03_1_OFZ009_Block.mat',
-                                '2023-06-20_1_OFZ010_Block.mat', '2023-06-23_1_OFZ010_Block.mat',
-                                '2023-05-30_1_OFZ010_Block.mat', '2023-06-15_1_OFZ010_Block.mat',
-                                '2023-05-31_1_OFZ011_Block.mat','2023-06-20_1_OFZ011_Block.mat',
-                                '2023-07_07_1_OFZ011_Block.mat', '2023-07-25_1_OFZ011_Block.mat',
-                                '2023-07-16_2_OFZ011_Block.mat', '2023-07-16_3_OFZ011_Block.mat',
-                                '2023-07-16_1_OFZ011_Block.mat',
-                                '2023-07-15_1_OFZ011_Block.mat', '2023-07-17_1_OFZ011_Block.mat',# w/imaging - corruption in transfer
-                                '2023-06-11_2_OFZ011_Block.mat', '2023-06-15_1_OFZ011_Block.mat',# w/imaging - stimulus artifact
-                                '2023-07-27_1_OFZ008_Block.mat', '2023-07-28_1_OFZ008_Block.mat', 
-                                '2023-07-24_1_OFZ011_Block.mat',# w/imaging - shifts in recording
-                                '2023-07-15_1_OFZ008_Block.mat', '2023-07-18_1_OFZ008_Block.mat',
-                                '2023-07-21_1_OFZ008_Block.mat', # w/imaging - light artifact
-                                '2023-07-16_2_OFZ008_Block.mat','2023-07-16_3_OFZ008_Block.mat',
-                                 ]
-                                                            
-        for animal in animalList:
-            animalPath = self.rawPath + animal +'\\'
+                                ]
+        acceptableExpDef = {'Grating2AFC_variableStimSize',}
+        rows = []
+        infoCreation = True
+
+        for animal in animalList: 
+            animalPath = os.path.join(self.rawPath, animal)
+
+            # if animalPath exists
+            if not os.path.exists(animalPath):
+                print(f"PROBLEM IN ANIMAL: {animal} does not exist: {animalPath}")
+                infoCreation = False
+                continue
+
             for root, dirs, files in os.walk(animalPath):
                 for fileName in files:
-                    if fileName.endswith('Block.mat'):
-                        # Extract the animal ID from the file name
-                        recordingDate = fileName.split('_')[0]  # Assuming the animal ID is the part before the first underscore
-                        recording_id  = fileName.split('_')[1]  # Assuming the animal ID is the part before the first underscore
-                        animal_id     = fileName.split('_')[2]  # Assuming the animal ID is the part before the first underscore
+                    if fileName in badRecordingSessions or not fileName.endswith('Block.mat'):
+                        continue
 
-                        # Mark the learning recordings
-                        date = datetime.strptime(recordingDate, '%Y-%m-%d')
-                        if (animal_id in ['OFZ009', 'OFZ010', 'OFZ011']) & (date < datetime(2023, 7, 10)):
-                            learning = True
-                        else:
-                            learning = False
+                    # Load the .mat file
+                    file_path = os.path.join(root, fileName)
+                    mat_data = sio.loadmat(file_path, squeeze_me=True, struct_as_record=False)
+                    block = mat_data.get('block', None)
+                    if block is None:
+                        print(f"No 'block' struct in {file_path}")
+                        continue
 
-                        #Mark the imaging session
-                        twoP_path = os.path.join(root[:-2],'TwoP')
-                        twoP_exist = glob.glob (twoP_path + '/*t-001')
-                        twoP_exist = len(twoP_exist)>0
-                        if twoP_exist == True:
-                            if fileName in badRecordingSessions:
-                                roi = 0
-                            elif (date >datetime(2023, 7, 3)) & (date < datetime(2023, 7, 10))  & (animal_id =='OFZ011'):
-                                 roi = 7 # seperate these
-                            elif  (date < datetime(2023, 7, 10)):
-                                roi = 1
-                            elif (date ==datetime(2023, 7, 20)) & (animal_id =='OFZ011'):
-                                 roi = 10 # wrong labelling  
-                            # elif (date ==datetime(2023, 7, 20)) & (animal_id =='OFZ011'):
-                            #     roi = 15
-                            # elif (date ==datetime(2023, 7, 21)) & (animal_id =='OFZ011'):
-                            #     roi = 15
-                            else:
-                                imaging_filename = [f for f in glob.glob(twoP_path +'\\*t-001')]
-                                imaging_filename = imaging_filename[0]
-                                
-                        else: # This line does not appear in the code
-                            roi= 0
-                        
 
-                        # Create a dictionary representing a row with the animal ID and file path
-                        row_data = {'animalID': animal_id, 
-                                    'recordingDate': recordingDate, 
-                                    'recordingID': recording_id, 
-                                    'sessionName': fileName[:-10],
-                                    'learningData': learning,
-                                    'twoP':twoP_exist,
-                                    'path': root[:-2],
-                                    'sessionNameWithPath': os.path.join(root, fileName),
-                                    'blockName': fileName[:-10],
-                                    'imagingTiffFileNames': glob.glob(twoP_path +'\\*t-001')[0] if glob.glob(twoP_path +'\\*t-001') else ''}
-                        # Append the row to the DataFrame
-                        info  = pd.concat([info, pd.DataFrame([row_data])], ignore_index=True)     
-        self.recordingList = info
-        info.head()
-        # Add main filepathname
-        self.recordingList['analysispathname'] = np.nan
-        for ind, recordingDate in enumerate(self.recordingList.recordingDate):
-            filepathname = (self.recordingList.path[ind] +
-                            '\\'+ self.recordingList.recordingID[ind])
-            self.recordingList.loc[ind,'filepathname'] = filepathname  
+                    # Extract fields
+                    rigName = getattr(block, 'rigName', None)
+                    expDef_full = getattr(block, 'expDef', '')
+                    expDef = os.path.splitext(os.path.basename(expDef_full))[0] if expDef_full else None
 
-            analysispathname = (self.analysisPath +
-                                '\\' + self.recordingList.recordingDate[ind] + '_' + 
-                                str(self.recordingList.animalID[ind]) + '_' + 
-                                self.recordingList.recordingID[ind])   
-            self.recordingList.loc[ind,'analysispathname'] = analysispathname +'\\'
-            if not os.path.exists(analysispathname): 
-                os.makedirs(analysispathname)
+                    # Check acceptable experiment definitions
+                    if expDef not in acceptableExpDef:
+                        continue
+
+                    # get performance
+                    try:
+                        stim_type, performance = get_stim_and_performance(block)
+                    except Exception as e:
+                        print(f"Most likely expRef does not match {file_path}: {e}")
+                        stim_type, performance = None, None
+                        continue
+
+                    expDuration = getattr(block, 'duration', None)
+                    # Parse filename (assuming format: YYYY-MM-DD_<recID>_<animalID>_Block.mat)
+                    parts = fileName.split('_')
+                    if len(parts) < 3:
+                        print(f"Unexpected filename format: {fileName}")
+                        continue
+                    recordingDate, recording_id, animal_id = parts[0], parts[1], parts[2]
+
+                    # Convert date string
+                    date = datetime.strptime(recordingDate, '%Y-%m-%d')
+
+                    # Mark the imaging session
+                    twoP_path = os.path.join(os.path.dirname(root), 'TwoP')
+                    tiff_files = glob.glob(os.path.join(twoP_path, '*t-001'))
+                    twoP_exist = len(tiff_files) > 0
+                    imaging_filename = tiff_files[0] if twoP_exist else None
+
+                    # Collect row
+                    row_data = {
+                        'animalID': animal_id, 
+                        'recordingDate': recordingDate, 
+                        'recordingID': recording_id, 
+                        'sessionName': fileName[:-10],
+                        'twoP': twoP_exist,
+                        'path': os.path.dirname(root),
+                        'imagingTiffFileNames': imaging_filename,
+                        'sessionNameWithPath': file_path,
+                        'blockName': fileName[:-10],
+                        'experimentDefinition': expDef,
+                        'duration': expDuration/60, # in mins
+                        'rigName': rigName,
+                        'performance': performance,
+                        'stimType': stim_type
+
+                    }
+                    rows.append(row_data)
+
+
+        if infoCreation:  # build dataframe once
+            info = pd.DataFrame(rows)
+            self.recordingList = info
+
+            # Add main filepathname
+            self.recordingList['analysispathname'] = pd.Series(dtype='string')
+            for ind, recordingDate in enumerate(self.recordingList.recordingDate):
+                filepathname = (self.recordingList.path[ind] +
+                                '\\'+ self.recordingList.recordingID[ind])
+                self.recordingList.loc[ind,'filepathname'] = filepathname  
+
+                analysispathname = (self.analysisPath +
+                                    '\\' + self.recordingList.recordingDate[ind] + '_' + 
+                                    str(self.recordingList.animalID[ind]) + '_' + 
+                                    self.recordingList.recordingID[ind])   
+                self.recordingList.loc[ind,'analysispathname'] = os.path.join(analysispathname, '')
+
                     
 def convert_tiff2avi (imagename, outputsavename, fps=30.0):
     # path = 'Z:\Data\\2022-05-09\\2022-05-09_22107_p-001\\'
@@ -268,370 +285,650 @@ def calculatePupil (filename, frameClockfromPAQ):
             "lengthCheck": lengthCheck,
             "frameClockfromPAQ": frameClockfromPAQ}
 
-# load suite2p data and compute dff
-#raw, spks, stat = utils.s2p_loader(os.path.join(s2p_path, 'plane{}'.format(plane)))
-#dff = utils.dfof2(raw) #compute dF/F - baseline is mean of whole trace here
+def get_stim_and_performance(block):
+    """
+    Exact match to MATLAB logic for high-contrast performance - instead of getBehav  code
 
-# deal withframe clock
-#tot_frames = dff.shape[1] * tot_planes
-#frame_clock = utils.paq_data(paq, 'frame_clock', threshold_ttl = True)
-#frame_clock = frame_clock[:tot_frames] # get rid of foxy bonus frames
-#frame_clock = frame_clock[plane::tot_planes] # just take clocks from the frame you care about
+        cDiff = contrastRight - contrastLeft
+        goodTrials = repeatNumber==1 & choice!='NoGo'   (choice: -1/1/0 => Left/Right/NoGo)
+        outcomeTime = nanmean([rewardTime, punishSoundOnsetTime], axis=1)  # computed but not used
+        highCPerformance = 100 * mean(feedback(good & abs(cDiff)==max(abs(cDiff))) == 'Rewarded')
 
-def tiff_metadata(folderTIFF):
+    Returns
+    -------
+    stim_type : str
+    performance : float (percent), NaN if not computable
+    """
+    # ---- helpers ----
+    def _get(obj, name, default=None): 
+        return getattr(obj, name, default)
 
-    ''' takes input of list of tiff folders and returns 
-        number of frames in the first of each tiff folder '''
-    
-    # First check if tiff file is good and correct
-    tiff_list = []
-    tseries_nframes = []
-    tiffs = utils.get_tiffs(folderTIFF)
-    if not tiffs:
-        raise print('cannot find tiff in '
-                                    'folder {}'.format(tseries_nframes))
-    elif len(tiffs) == 1:
-        assert tiffs[0][-7:] == 'Ch3.tif', 'channel not understood '\
-                                            'for tiff {}'.format(tiffs)
-        tiff_list.append(tiffs[0])
-    elif len(tiffs) == 2:  # two channels recorded (red is too dim)
-        print('There are more than one tiff file - check: '+ folderTIFF)
+    def _arr(x):
+        if x is None: 
+            return None
+        a = np.asarray(x)
+        return a.squeeze()
 
-    with tifffile.TiffFile(tiffs[0]) as tif:
-        tif_tags = {}
-        for tag in tif.pages[0].tags.values():
-            name, value = tag.name, tag.value
-            tif_tags[name] = value
+    # Stimulus type from block.expDef
+    exp_def_full = _get(block, 'expDef', '')
+    if isinstance(exp_def_full, bytes):
+        exp_def_full = exp_def_full.decode(errors='ignore')
+    stim_type = "Unknown"
+    if exp_def_full:
+        base = os.path.basename(str(exp_def_full).replace('\\', os.sep).replace('/', os.sep))
+        stim_type = base[:-2] if base.endswith('.m') else base
 
-    x_px = tif_tags['ImageWidth']
-    y_px = tif_tags['ImageLength']
-    image_dims = [x_px, y_px]
+    events = _get(block, 'events', None)
+    outputs = _get(block, 'outputs', None)
+    if events is None:
+        return stim_type, np.nan
 
-    n_frames = re.search('(?<=\[)(.*?)(?=\,)', 
-                         tif_tags['ImageDescription'])
+    endTrialTimes = _arr(_get(events, 'endTrialTimes', None))
+    if endTrialTimes is None or endTrialTimes.size == 0:
+        return stim_type, np.nan
+    N = int(endTrialTimes.size)
 
-    n_frames = int(n_frames.group(0))
-    tseries_nframes.append(n_frames)
+    # --- required fields for exact computation ---
+    cL = _arr(_get(events, 'contrastLeftValues', None))
+    cR = _arr(_get(events, 'contrastRightValues', None))
+    rep = _arr(_get(events, 'repeatNumValues', None))
+    choice = _arr(_get(events, 'responseValues', None))          # -1/1/0
+    feedback = _arr(_get(events, 'feedbackValues', None))        # 0/1 or -1/1
 
-    return image_dims, tseries_nframes
+    # If contrasts are missing, we cannot do the "max |cDiff|" logic -> NaN (exact behavior can’t be reproduced)
+    if cL is None or cR is None or rep is None or choice is None or feedback is None:
+        return stim_type, np.nan
 
-def getIndexForInterestedcellsID ( s_recDate, s_animalID, s_recID, s_cellID ):
-    infoPath = 'C:\\Users\\Huriye\\Documents\\code\\clapfcstimulation\\analysis\\infoForAnalysis-readyForSelectingInterestedCells.pkl'    
-    animalID, stimuliFamilarity, dataQuality,recData, recID, cellID, pvalsBoth, pvalsVis, pvalsOpto,dff_meanVisValue, dff_meanBothValue, dff_meanOptoValue, pupilID = pd.read_pickle(infoPath) 
-    ind = np.where((np.array(animalID) == s_animalID) & (np.array(recID) == s_recID) & (np.array(cellID) == s_cellID) & (np.array(recData) == s_recDate))
-    return ind
+    # trim to N trials
+    def _trim(a):
+        return a[:N] if a is not None else None
 
-def selectInterestedcells ( aGroup, stimType, responsive = True, plotValues = False, pupil = True ):
-    infoPath = 'C:\\Users\\Huriye\\Documents\\code\\clapfcstimulation\\analysis\\infoForAnalysis-readyForSelectingInterestedCells.pkl'    
-    animalID, stimuliFamilarity, dataQuality,recData, recID, cellID, pvalsBoth, pvalsVis, pvalsOpto,dff_meanVisValue, dff_meanBothValue, dff_meanOptoValue, pupilID = pd.read_pickle(infoPath) 
-    
-    infoPath = 'C:\\Users\\Huriye\\Documents\\code\\clapfcstimulation\\analysis\\infoForAnalysis-readyForPlotting.pkl'
-    dff_traceBoth, dff_traceVis, dff_traceOpto, dff_meanBoth1sec, dff_meanVis1sec, dff_meanOpto1sec = pd.read_pickle(infoPath) 
+    cL, cR = _trim(cL), _trim(cR)
+    rep, choice, feedback = _trim(rep), _trim(choice), _trim(feedback)
 
-    CTAP_animals = [21104, 21107, 21108, 21109,22101,22102,22103,22104,22105,22106,22107,22108]
-    NAAP_animals   = [21101, 21102, 21103, 21105, 21106]  
-    control_animals = [23040, 23036, 23037]
+    # Build table (like MATLAB table)
+    b = pd.DataFrame({
+        "contrastLeft":  cL.astype(float, copy=False),
+        "contrastRight": cR.astype(float, copy=False),
+        "repeatNumber":  rep.astype(float, copy=False),
+        "choice":        choice.astype(float, copy=False),
+        "feedback_raw":  feedback.astype(float, copy=False),
+    })
 
-    if aGroup == 'CTAP':
-        # exclude inhibitory animals
-        s = set(CTAP_animals)
-        selectedAnimals = np.array([i in s for i in animalID])
-    elif aGroup == 'NAAP':
-        s = set(NAAP_animals)
-        selectedAnimals = np.array([i in s for i in animalID])
-    elif aGroup == 'Control':
-        s = set(control_animals)
-        selectedAnimals = np.array([i in s for i in animalID])
+    # Map feedback to strings 'Unrewarded'/'Rewarded' (exact semantics)
+    # MATLAB uses categorical([0 1], {'Unrewarded','Rewarded'}) or [-1 1] -> map >0 to Rewarded
+    b["feedback"] = np.where(b["feedback_raw"] > 0, "Rewarded", "Unrewarded")
 
-    # exclude trained stimuli
-    if stimType == 'Trained':
-        includeType = [2,3]
-        s = set(includeType)
-        selectedFamilarity = np.array([i in s for i in stimuliFamilarity])
-        # exclude 22102 and 22108 as they did not learn
-        s = [22101, 22103, 22104, 22105, 22106, 22107]
-        selectedAnimals = np.array([i in s for i in animalID])
-        selectedFamilarity = selectedFamilarity & selectedAnimals
-    elif stimType  == 'Naive':
-        includeType = [0, 1]
-        s = set(includeType)
-        selectedFamilarity = np.array([i in s for i in stimuliFamilarity])
-    elif stimType  == 'Pupil-control-coveredMicroscope':
-        includeType = [6]
-        s = set(includeType)
-        selectedFamilarity = np.array([i in s for i in stimuliFamilarity])
-    elif stimType  == 'Pupil-control-not-coveredMicroscope':
-        includeType = [7]
-        s = set(includeType)
-        selectedFamilarity = np.array([i in s for i in stimuliFamilarity])
-    
+    # cDiff and goodTrials (exact)
+    b["cDiff"] = b["contrastRight"] - b["contrastLeft"]
+    goodTrials = (b["repeatNumber"] == 1) & (b["choice"] != 0)
 
-        # select only pupil
-    if pupil:
-        includeType = [1]
-        s = set(includeType)
-        selectedPupil = np.array([i in s for i in pupilID])
+    # outcomeTime row-wise nanmean of [rewardTime, punishSoundOnsetTime] (computed but not used)
+    rewardTime = _arr(_get(events, 'rewardTimes', None))  # some profiles
+    if rewardTime is None and outputs is not None:
+        rewardTime = _arr(_get(outputs, 'rewardTimes', None))  # _noTimeline profile
+    punishTime = _arr(_get(events, 'punishSoundOnsetTime', None))
+    rewardTime = _trim(rewardTime) if rewardTime is not None else None
+    punishTime = _trim(punishTime) if punishTime is not None else None
+    if rewardTime is not None and punishTime is not None and len(rewardTime) == N and len(punishTime) == N:
+        rt = pd.Series(rewardTime, dtype='float64')
+        pt = pd.Series(punishTime, dtype='float64')
+        b["outcomeTime"] = pd.concat([rt, pt], axis=1).mean(axis=1, skipna=True)
     else:
-        includeType = [0, 1]
-        s = set(includeType)
-        selectedPupil = np.array([i in s for i in pupilID])
+        b["outcomeTime"] = np.nan  # keep column for parity with MATLAB, not used in perf
 
-    # # exclude not good quality data
-    # includeType =[0, 1] 
-    # s = set(includeType)
-    # selectedQuality = np.array([i in s for i in dataQuality])
+    # highCPerformance: restrict to goodTrials & max |cDiff|
+    if not np.isfinite(b["cDiff"]).any():
+        return stim_type, np.nan
 
-    selectedExpGroup = selectedAnimals & selectedFamilarity & selectedPupil #& selectedQuality
+    max_abs_cdiff = np.nanmax(np.abs(b["cDiff"].values))
+    mask_highC = goodTrials & (np.abs(b["cDiff"]) == max_abs_cdiff)
 
-    # exclude non responsive units
-    #p_fdr = 0.0001
-    #p_standard = 0.05
-    #responsiveOpto = (np.array(pvalsOpto) <= p_fdr)
-    #responsiveNoOpto  = (np.array(pvalsOpto) > p_standard)
-    if responsive==False:
-        selectedCellIndex = selectedExpGroup
-        responsiveNoSensory =[]
+    if mask_highC.any():
+        perf = 100.0 * (b.loc[mask_highC, "feedback"].eq("Rewarded")).mean()
     else:
+        perf = np.nan
 
-        temp = fdrcorrection(pvalsVis, alpha=0.05/3, method='i', is_sorted=False)
-        responsiveVis  = temp[0]
-        responsiveNoVis  = (np.array(pvalsVis) > 0.05)
-    
-        temp = fdrcorrection(pvalsOpto, alpha=0.05/3, method='i', is_sorted=False)
-        responsiveOpto = temp[0]
-        responsiveNoOpto = (np.array(pvalsOpto) > 0.05)
-        
-        temp = fdrcorrection(pvalsBoth, alpha=0.05/3, method='i', is_sorted=False)
-        responsiveBoth = temp[0]
-        responsiveNoBoth  = (np.array(pvalsBoth) > 0.05)
+    return stim_type, float(perf)
 
-        responsiveVis  = selectedExpGroup & responsiveVis   # np.logical_and(selectedExpGroup,responsiveVis)
-        responsiveOpto = selectedExpGroup & responsiveOpto  # np.logical_and(selectedExpGroup,responsiveOpto)
-        responsiveBoth = selectedExpGroup & responsiveBoth  # np.logical_and(selectedExpGroup,responsiveBoth) 
+def save_png_with_contrast(ref_file, out_png, also_save_16bit=False, p_lo=1, p_hi=99.5):
+    img = imread(ref_file)
 
-        responsiveNoVis  = selectedExpGroup & responsiveNoVis   # np.logical_and(selectedExpGroup,responsiveVis)
-        responsiveNoOpto = selectedExpGroup & responsiveNoOpto  # np.logical_and(selectedExpGroup,responsiveOpto)
-        responsiveNoBoth = selectedExpGroup & responsiveNoBoth  # np.logical_and(selectedExpGroup,responsiveBoth) 
+    # If 3D stack, make a mean projection for display
+    if img.ndim == 3:
+        img = img.mean(axis=0)
 
-        responsiveOnlyVis    = responsiveVis & responsiveNoOpto & responsiveNoBoth
-        responsiveOnlyOpto   = responsiveOpto & responsiveNoVis & responsiveNoBoth
-        responsiveOnlyBoth   = responsiveBoth & responsiveNoOpto & responsiveNoVis
-        responsiveAll = responsiveVis | responsiveOpto | responsiveBoth
-        nonResponsiveAll = responsiveNoVis | responsiveNoOpto | responsiveNoBoth 
+    # Robust min/max from percentiles
+    lo = np.percentile(img, p_lo)
+    hi = np.percentile(img, p_hi)
+    if hi <= lo:  # fallback if image is nearly constant
+        lo, hi = float(img.min()), float(img.max())
 
-        if plotValues:
-            print('All cell number:'+ str(np.sum(selectedExpGroup)))
-            # All responsive cells
-            responsiveAll = responsiveVis | responsiveOpto | responsiveBoth
-            responsiveVisOpto = responsiveVis & responsiveOpto
-            responsiveVisOptoBoth = responsiveVis & responsiveOpto & responsiveBoth
-            print('Any responsive cell number:'+ str(np.sum(responsiveAll)))
-            print('Visual AND opto responsive cell number:'+ str(np.sum(responsiveVisOpto)))
-            print('Visual AND opto AND BOTH responsive cell number:'+ str(np.sum(responsiveVisOptoBoth)))
+    # Normalize to 0..1 then 8-bit
+    if hi > lo:
+        img_norm = np.clip((img.astype(np.float32) - lo) / (hi - lo), 0, 1)
+    else:
+        img_norm = np.zeros_like(img, dtype=np.float32)
 
-            # visual cue responsive cells
-            responsiveOnlyVis   = responsiveVis & ~responsiveOpto
-            responsiveOnlyVis   = np.logical_and(responsiveOnlyVis,~responsiveBoth)
-            excDff = (np.array(dff_meanVisValue)> 0)
-            inhDff = (np.array(dff_meanVisValue)<0)
-            excOnly = excDff & responsiveOnlyVis
-            inhOnly = inhDff & responsiveOnlyVis
-            print('Visual cue - all visual responsive cells: '+ str(np.sum(responsiveVis)))
-            print('Visual cue - only visual responsive: '+ str(np.sum(responsiveOnlyVis)))
-            print('Visual cue - EXC opto responsive: '+ str(np.sum(excOnly)/np.sum(responsiveOnlyVis)))
-            print('Visual cue - INH opto responsive: '+ str(np.sum(inhOnly)/np.sum(responsiveOnlyVis)))
+    img8 = (img_norm * 255).astype(np.uint8)
 
-            # pto cue responsive cells
-            print('Opto stimulation - all opto responsive cells: '+ str(np.sum(responsiveOpto)))
-            responsiveOnlyOpto   = responsiveOpto & responsiveNoVis
-            responsiveOnlyOpto   = responsiveOnlyOpto & responsiveNoBoth
-            print('Opto stimulation - only opto responsive: '+ str(np.sum(responsiveOnlyOpto)))
-            excDff = (np.array(dff_meanBothValue) > 0)
-            inhDff = (np.array(dff_meanBothValue) < 0)
-            excOnly = excDff & responsiveOnlyOpto
-            inhOnly = inhDff & responsiveOnlyOpto
-            print('Opto stimulation - EXC opto responsive: '+ str(np.sum(excOnly)/np.sum(responsiveOnlyOpto)))
-            print('Opto stimulation - INH opto responsive: '+ str(np.sum(inhOnly)/np.sum(responsiveOnlyOpto)))
+    # write display PNG
+    out_png = os.path.splitext(out_png)[0] + ".png"
+    imageio.imwrite(out_png, img8)
+    #print(f"Saved display PNG with contrast stretch: {out_png}")
 
-            # Both cue responsive cells
-            print('Both - all both responsive cells:'+ str(np.sum(responsiveBoth)))
-            responsiveOnlyBoth  = np.logical_and(responsiveBoth,~responsiveVis)
-            responsiveOnlyBoth   = np.logical_and(responsiveOnlyBoth,~responsiveOpto)
-            print('Both - only both responsive: '+ str(np.sum(responsiveOnlyBoth)))
-            excDff = (np.array(dff_meanBothValue) > 0)
-            inhDff = (np.array(dff_meanBothValue) < 0)
-            excOnly = excDff & responsiveOnlyBoth
-            inhOnly = inhDff & responsiveOnlyBoth
-            print('Both - EXC opto responsive: '+ str(np.sum(excOnly)/np.sum(responsiveOnlyBoth)))
-            print('Both - INH opto responsive: '+ str(np.sum(inhOnly)/np.sum(responsiveOnlyBoth)))
+    # optional: also save a full-range 16-bit PNG (for analysis)
+    if also_save_16bit:
+        img16 = np.clip(img, 0, np.iinfo(np.uint16).max).astype(np.uint16)
+        out_png16 = os.path.splitext(out_png)[0] + "_16bit.png"
+        imageio.imwrite(out_png16, img16)
+       # print(f"✅ Saved raw-range 16-bit PNG: {out_png16}")
 
-            # # Sensory responsive cells
-            # responsiveSensory  = responsiveVis | responsiveBoth
-            # responsiveSensory  = responsiveSensory & ~responsiveOnlyOpto
-            # print('Sensory responsive cell number:'+ str(np.sum(responsiveSensory)))
-            # excDff = (np.array(dff_meanBothValue) > 0)
-            # inhDff = (np.array(dff_meanBothValue) < 0)
-            # excOnly = excDff & responsiveSensory
-            # inhOnly = inhDff & responsiveSensory
-            # print('responsiveSensory - EXC opto responsive: '+ str(np.sum(excOnly)/np.sum(responsiveSensory)))
-            # print('responsiveSensory - INH opto responsive: '+ str(np.sum(inhOnly)/np.sum(responsiveSensory)))
+def parse_pv_env(env_path):
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(env_path)
+    root = tree.getroot()
 
-            # responsiveNoSensory  = responsiveOnlyOpto #responsiveOpto & responsiveNoVis & responsiveNoBoth
-            # print('NO sensory responsive cell number:'+ str(np.sum(responsiveNoSensory)))
-            # excDff = (np.array(dff_meanBothValue) > 0)
-            # inhDff = (np.array(dff_meanBothValue) < 0)
-            # excOnly = excDff & responsiveNoSensory
-            # inhOnly = inhDff & responsiveNoSensory
-            # print('responsiveNoSensory - EXC opto responsive: '+ str(np.sum(excOnly)/np.sum(responsiveNoSensory)))
-            # print('responsiveNoSensory - INH opto responsive: '+ str(np.sum(inhOnly)/np.sum(responsiveNoSensory)))
-    
-    if responsive =='Visual':
-        selectedCellIndex = responsiveOnlyVis
-    elif responsive =='Opto':
-        selectedCellIndex = responsiveOnlyOpto
-    elif responsive =='Both':
-        selectedCellIndex = responsiveOnlyBoth
-    elif responsive =='All':
-        selectedCellIndex = responsiveAll
-    elif responsive=='None':
-        selectedCellIndex = nonResponsiveAll
+    def find_value(key):
+        el = root.find(f".//PVStateValue[@key='{key}']")
+        return el.get('value') if el is not None else None
 
-    return selectedCellIndex
+    def find_enum(key):
+        el = root.find(f".//PVStateValue[@key='{key}']")
+        if el is not None and el.find("EnumIndex") is not None:
+            return el.find("EnumIndex").get("value")
+        return None
 
-def norm_to_zero_one(row):
-    min_val = np.nanmin(row)
-    max_val = np.nanmax(row)
-    normalized_row = (row - min_val) / (max_val - min_val)
-    return normalized_row
+    # direct keys
+    objective = find_value('objectiveLens') or find_value('objectiveLensMag')
+    optical_zoom = find_value('opticalZoom')
+    pixels_per_line = find_value('pixelsPerLine')
+    frame_period = find_value('framePeriod')
 
-def plot_dff_mean_traces (pathname, cellID, tTypes, axis):
-        ## Parameters
-    fRate = 1000/30
-    responsiveness_test_duration = 1000.0 #in ms 
-    simulationDur_ms = 350.0 # in ms
-    simulationDur = int(np.ceil(simulationDur_ms/fRate))
-    pre_frames    = 2000.0# in ms
-    pre_frames    = int(np.ceil(pre_frames/fRate))
-    post_frames   = 6000.0 # in ms
-    post_frames   = int(np.ceil(post_frames/fRate))
-    analysisWindowDur = 1500 # in ms
-    analysisWindowDur = int(np.ceil(analysisWindowDur/fRate))
-    shutterLength     = int(np.round(simulationDur_ms/fRate))
-    #tTypes = [ 'onlyVis', 'Both', 'onlyOpto']
+    # scan orientation
+    scan_rot = find_value('scanRotation')      # degrees
+    scan_flip = find_enum('scanDirection')     # 0=normal, 1=flipped (often along Y)
+    scan_center_y = find_value('scanCenterY')  # µm offset on Y
+    scan_size_y = find_value('scanSizeY')      # field height µm
 
-    ########## Organise stimuli times 
-    paqData = pd.read_pickle (pathname+'paq-data.pkl')
-    paqRate = paqData['rate']
-    # Get the stim start times 
-    frame_clock    = utils.paq_data (paqData, 'prairieFrame', threshold_ttl=True, plot=False)
-    optoStimTimes  = utils.paq_data (paqData, 'optoLoopback', threshold_ttl=True, plot=False)
+    # calibration FOV under PVObjectiveLensController
+    calib = root.find(".//PVObjectiveLensController/PVObjective[@name='_x0031_6X']/Calibration")
+    if calib is None:
+        calib = root.find(".//PVObjectiveLensController//Calibration")
+    fov_w = calib.get('fovWidth') if calib is not None else None
+    fov_h = calib.get('fovHeight') if calib is not None else None
 
-    # the frame_clock is slightly longer in paq as there are some up to a sec delay from
-    # microscope to PAQI/O software.  
-    optoStimTimes = utils.stim_start_frame (paq=paqData, stim_chan_name='optoLoopback',
-                                        frame_clock=None,stim_times=None, plane=0, n_planes=1)
-    visStimTimes = utils.stim_start_frame (paq=paqData, stim_chan_name='maskerLED',
-                                        frame_clock=None,stim_times=None, plane=0, n_planes=1)
-    shutterTimes = utils.shutter_start_frame (paq=paqData, stim_chan_name='shutterLoopback',
-                                        frame_clock=None,stim_times=None, plane=0, n_planes=1)
+    # derived
+    px_size_um = float(fov_w)/int(pixels_per_line) if fov_w and pixels_per_line else None
+    fs = 1.0/float(frame_period) if frame_period else None
 
-    # Lets organise it more for analysis friendly format
-    trialStartTimes = np.unique(np.concatenate((optoStimTimes,visStimTimes),0))
-    trialTypes = []
-    for t in trialStartTimes:
-        optoexist =  np.any(optoStimTimes== t)
-        visexist  =  np.any( visStimTimes == t)
-        if  optoexist  & visexist: 
-            trialTypes += ['Visual + Opto']
-        elif optoexist &~ visexist:
-            trialTypes += ['Opto']
-        elif ~optoexist & visexist:
-            trialTypes += ['Visual']
+    return {
+        "objective": objective,
+        "optical_zoom": float(optical_zoom) if optical_zoom else None,
+        "fov_width_um": float(fov_w) if fov_w else None,
+        "fov_height_um": float(fov_h) if fov_h else None,
+        "pixels_per_line": int(pixels_per_line) if pixels_per_line else None,
+        "frame_period_s": float(frame_period) if frame_period else None,
+        "fs_Hz": fs,
+        "pixel_size_um": px_size_um,
+        # orientation
+        "scan_rotation_deg": float(scan_rot) if scan_rot else 0.0,
+        "scan_flip_Y": (scan_flip == "1"),  # True if Y flipped
+        "scan_center_Y_um": float(scan_center_y) if scan_center_y else None,
+        "scan_size_Y_um": float(scan_size_y) if scan_size_y else None
+    }
+
+def add_trial_side_info(behData: pd.DataFrame, tiff_path: str) -> pd.DataFrame:
+    """
+    Adds trial-level columns for stimulus side, recording side, and choice bias.
+
+    Parameters
+    ----------
+    behData : pd.DataFrame
+        Must have at least columns ['correctResponse', 'choice'].
+    tiff_path : str
+        Path to the TIFF directory (where a .env file also exists).
+
+    Returns
+    -------
+    behData : pd.DataFrame
+        With new columns:
+            - recordingSideStim   : hemisphere being imaged (constant for all trials)
+            - biasStim            : stimulus side this trial (left/right)
+            - biasChoice          : choice side this trial (left/right)
+            - recordingSideChoice : choice relative to imaging hemisphere (ipsi/contra/no_choice)
+    """
+
+    # find PrairieView .env
+    filenameENV = glob.glob(os.path.join(tiff_path, "*.env"))
+    if not filenameENV:
+        raise FileNotFoundError(f"No .env file found in {tiff_path}")
+    recording_side = which_side_from_env(filenameENV[0])
+
+    if recording_side not in ("left", "right"):
+        print(recording_side)
+        raise ValueError(f"recording_side must be 'left' or 'right', got {recording_side}")
+
+    behData = behData.copy()
+
+    # constant: hemisphere imaged
+    behData["recordingSideStim"] = recording_side
+
+    # trial-dependent stimulus side
+    behData["biasStim"] = behData["correctResponse"].str.lower()
+
+    # trial-dependent choice side
+    behData["biasChoice"] = behData["choice"].str.lower()
+
+    # choice relative to hemisphere
+    def classify_choice(choice: str):
+        if pd.isna(choice) or choice == "nogo":
+            return "no_choice"
+        if choice == recording_side:
+            return "ipsi"
         else:
-            trialTypes += ['CHECK']
-    trialStartTimes = shutterTimes
-    #t = [idx for idx, t_type in enumerate(trialTypes) if t_type=='Both']
+            return "contra"
 
-    ########## Organise calcium imaging traces 
-    imData = pd.read_pickle (pathname +'imaging-data.pkl')
-    fluR      = imData['flu']
-    n_frames  = imData['n_frames']
-    flu_raw   = imData['flu_raw']
+    behData["recordingSideChoice"] = behData["biasChoice"].apply(classify_choice)
 
-    # Lets put nans for stimulated frames
-    frameTimes = np.full((1,fluR.shape[1] ), False) # create a full false array
-    for sT in shutterTimes:
-        frameTimes[:,sT:(sT+shutterLength)] = True
-    fluR[:, frameTimes[0,:]] = np.nan
+    return behData
 
-    # clean detrended traces
-    flu = utils.clean_traces(fluR)
+def which_side_from_env(env_path: dict) -> str:
+    tree = ET.parse(env_path)
+    root = tree.getroot()
 
-    ### Get dff values for 4 trial types
-    dffTrace ={} 
-    dffTrace_mean ={}
-    dffAfterStim1500ms_median ={}
-    for indx, t in enumerate(tTypes) :
-        if t =='All':
-            trialInd = np.transpose(list(range(len(trialStartTimes))))
-        else:
-            trialInd = [idx for idx, t_type in enumerate(trialTypes) if t_type==t]
-        
-        if len(trialInd)>1:
-            dffTrace[t]      = utils.flu_splitter(flu, trialStartTimes[trialInd], pre_frames, post_frames) # Cell x time x trial
+    y_stage = None
+    for val in root.findall(".//PVStateValue[@key='positionCurrent']/SubindexedValues[@index='YAxis']/SubindexedValue"):
+        y_stage = float(val.attrib["value"])
 
-    #create dff for all cells
-    for indx, t in enumerate(tTypes):
-        pfun.lineplot_withSEM (data=dffTrace[t][cellID], colorInd = indx, label=t, axis = axis)
-                
-                          
-# def run_suite2p (self, data_path, filename): # Not tested - 05/03/2022 HA
-#     from suite2p.run_s2p import run_s2p
-#     ops = {
-#         # main settings
-#         'nplanes' : 1, # each tiff has these many planes in sequence
-#         'nchannels' : 1, # each tiff has these many channels per plane
-#         'functional_chan' : 1, # this channel is used to extract functional ROIs (1-based)
-#         'diameter': 12, # this is the main parameter for cell detection, 2-dimensional if Y and X are different (e.g. [6 12])
-#         'tau':  1.26, # this is the main parameter for deconvolution (1.25-1.5 for gcamp6s)
-#         'fs': 30.,  # sampling rate (total across planes)
-#         # output settings
-#         'delete_bin': False, # whether to delete binary file after processing
-#         'save_mat': True, # whether to save output as matlab files
-#         'combined': True, # combine multiple planes into a single result /single canvas for GUI
-#         # parallel settings
-#         'num_workers': 0, # 0 to select num_cores, -1 to disable parallelism, N to enforce value
-#         'num_workers_roi': 0, # 0 to select number of planes, -1 to disable parallelism, N to enforce value
-#         # registration settings
-#         'batch_size': 500, # reduce if running out of RAM
-#         'do_registration': True, # whether to register data
-#         'nimg_init': 300, # subsampled frames for finding reference image
-#         'maxregshift': 0.1, # max allowed registration shift, as a fraction of frame max(width and height)
-#         'align_by_chan' : 1, # when multi-channel, you can align by non-functional channel (1-based)
-#         'reg_tif': False, # whether to save registered tiffs
-#         'subpixel' : 10, # precision of subpixel registration (1/subpixel steps)
-#         # cell detection settings
-#         'connected': True, # whether or not to keep ROIs fully connected (set to 0 for dendrites)
-#         'navg_frames_svd': 5000, # max number of binned frames for the SVD
-#         'nsvd_for_roi': 1000, # max number of SVD components to keep for ROI detection
-#         'max_iterations': 20, # maximum number of iterations to do cell detection
-#         'ratio_neuropil': 6., # ratio between neuropil basis size and cell radius
-#         'ratio_neuropil_to_cell': 3, # minimum ratio between neuropil radius and cell radius
-#         'tile_factor': 1., # use finer (>1) or coarser (<1) tiles for neuropil estimation during cell detection
-#         'threshold_scaling': 0.8, # adjust the automatically determined threshold by this scalar multiplier
-#         'max_overlap': 0.75, # cells with more overlap than this get removed during triage, before refinement
-#         'inner_neuropil_radius': 2, # number of pixels to keep between ROI and neuropil donut
-#         'outer_neuropil_radius': np.inf, # maximum neuropil radius
-#         'min_neuropil_pixels': 350, # minimum number of pixels in the neuropil
-#         # deconvolution settings
-#         'prctile_baseline': 8.,# optional (whether to use a percentile baseline)
-#         'baseline': 'maximin', # baselining mode
-#         'win_baseline': 60., # window for maximin
-#         'sig_baseline': 10., # smoothing constant for gaussian filter
-#         'neucoeff': .7,  # neuropil coefficient
-#     }
-#     db = {
-#     'data_path': data_path,
-#     'tiff_list': data_path + filename, 
-#     }
-#     opsEnd = run_s2p (ops=ops,db=db)
+    if y_stage is None:
+        raise ValueError("Could not find Y stage position in env file")
+
+    return "left" if y_stage < 0 else "right"
+
+def _expand_inf(x):
+    # allow "inf"/"-inf" strings in JSON
+    if isinstance(x, str):
+        if x.lower() == "inf": return float("inf")
+        if x.lower() == "-inf": return float("-inf")
+    if isinstance(x, list):
+        return [_expand_inf(v) for v in x]
+    if isinstance(x, dict):
+        return {k: _expand_inf(v) for k, v in x.items()}
+    return x
+
+def _load_ops_json(ops_json_path: str) -> dict:
+    with open(ops_json_path, "r") as f:
+        ops = json.load(f)
+    ops = _expand_inf(ops)
+    # expand ~ in paths if present
+    if "fast_disk" in ops and isinstance(ops["fast_disk"], str):
+        ops["fast_disk"] = os.path.expanduser(ops["fast_disk"])
+    return ops
+
+def _load_ops_yaml(ops_yaml_path: str) -> dict:
+    with open(ops_yaml_path, "r") as f:
+        ops = yaml.safe_load(f)
+    ops = _expand_inf(ops)
+    # expand ~ in paths if present
+    if "fast_disk" in ops and isinstance(ops["fast_disk"], str):
+        ops["fast_disk"] = os.path.expanduser(ops["fast_disk"])
+    return ops
+
+def find_tiff_file(tiff_path: str, channel: str = "Ch2") -> str:
+    """
+    Given a directory (tiff_path), find the first TIFF file inside it.
+    Optionally filter by channel string (default: 'Ch2').
+    """
+    # search for .tif and .tiff files
+    pattern1 = os.path.join(tiff_path, f"*{channel}.tif")
+    pattern2 = os.path.join(tiff_path, f"*{channel}.tiff")
+    files = glob.glob(pattern1) + glob.glob(pattern2)
+    
+    if not files:
+        raise FileNotFoundError(f"No {channel} TIFF files found in {tiff_path}")
+    
+    files.sort()  # deterministic ordering
+    return files[0]   # return the first match
+
+def suite2p_extraction(
+    tiff_path: str,
+    ops_yaml_path: str,
+    imagingDetails: Optional[dict] = None,
+    genotype: Optional[str] = None,
+):
+    """
+    Run Suite2p on a single TIFF using ops loaded from JSON, with optional overrides from imagingDetails.
+
+    Parameters
+    ----------
+    tiff_path : str          # full path to *Ch2.tif(f)
+    save_path : str          # output dir (usually .../TwoP/.../suite2p)
+    ops_json_path : str      # path to ops_Suite2p.json
+    imagingDetails : dict    # e.g. {'fs': 15.0, 'optical_zoom': 1.0, 'pixel_size_um': 0.79, ...}
+    fast_disk : str|None     # override ops['fast_disk'] if provided
+    base_soma_um : float     # soma diameter in microns to convert to pixels
+    """
+
+    tiff_file = find_tiff_file(tiff_path, channel="Ch2")
+    if not os.path.isfile(tiff_file):
+        raise FileNotFoundError(f"TIFF not found: {tiff_file}")
+
+
+    # 1) load ops from YAML
+    ops = _load_ops_yaml(ops_yaml_path)
+
+    # 2) set output and temp-disk locations
+    ops["save_path0"] = tiff_path
+
+    # 3) override from imagingDetails
+    diameter_um = 7.9
+    if imagingDetails:
+        zoom = imagingDetails.get("optical_zoom")          # Hz
+        pixelsize_um  = imagingDetails.get("pixel_size_um")
+        ops["fs"] = imagingDetails.get("fs_Hz") 
+        print(ops["fs"])
+        ops['diameter'] = int(np.round(diameter_um / pixelsize_um))
+
+
+    # dia_px = max(4, int(round(base_soma_um / float(px_um))))
+    # print(f"Using diameter {dia_px} pixels (base {base_soma_um} um, px size {px_um:.3f} um)")
+    # ops["diameter"] = 11# dia_px
+
+    if genotype== '8s':
+        ops["tau"] = 0.5 # 1.26 is good for GCaMP6s
+    
+    # 4) build db and run
+    db = {
+        "data_path": tiff_path,
+        "tiff_list": [tiff_file],
+        "save_path": tiff_path
+    }
+    print(tiff_path)
+
+    t0 = time.time()
+    print("CuPy version:", cupy.__version__)
+    print("CUDA device:", cupy.cuda.runtime.getDeviceProperties(0)['name'])
+    print("Ops useGPU:", ops["useGPU"])
+    res_ops = run_s2p(ops=ops, db=db)
+    print(f"✓ Done in {time.time()-t0:.1f}s → {Path(tiff_path, 'plane0').as_posix()}")
+    return res_ops
+
+class Tee(object):
+    def __init__(self, logfile, mode="w"):
+        self.file = open(logfile, mode)
+        self.stdout = sys.stdout
+        self.stderr = sys.stderr
+        sys.stdout = self
+        sys.stderr = self
+
+    def write(self, data):
+        self.stdout.write(data)
+        self.file.write(data)
+
+    def flush(self):
+        self.stdout.flush()
+        self.file.flush()
+
+    def close(self):
+        sys.stdout = self.stdout
+        sys.stderr = self.stderr
+        self.file.close()
+
+def update_info(info):
+    """
+    Update info.recordingList flags (PAQextracted, CSVcreated, suite2Pcreated, dffcreated, etc.)
+    without reprocessing data. Only checks if expected files/folders exist.
+    
+    Parameters
+    ----------
+    info : object
+        Must have `recordingList` DataFrame with at least:
+        ['path', 'analysispathname', 'sessionName', 'imagingTiffFileNames'].
+    
+    Returns
+    -------
+    info : object
+        Updated info object with missing flags filled (0 = missing, 1 = exists).
+    """
+    # Ensure required columns exist
+    for col, dtype in [
+    ("PAQextracted", "Int64"),     # nullable integer
+    ("PAQdataFound", "Int64"),
+    ("CSVcreated", "Int64"),
+    ("CSVpath", "string"),         # <-- explicitly string
+    ("suite2Pcreated", "Int64"),
+    ("dffcreated", "Int64")
+    ]:
+        if col not in info.recordingList.columns:
+            info.recordingList[col] = pd.Series(dtype=dtype)
+
+    # Loop through recordings
+    for ind in range(len(info.recordingList)):
+
+        # ---- Step 1: PAQ ----
+        if pd.isna(info.recordingList.loc[ind, 'PAQextracted']):
+            filenamePAQextracted = glob.glob(os.path.join(info.recordingList.path[ind], "**", "*paq_imaging_frames.txt"), recursive=True)
+            info.recordingList.loc[ind, 'PAQextracted'] = 1 if len(filenamePAQextracted) > 0 else 0
+
+        if pd.isna(info.recordingList.loc[ind, 'PAQdataFound']):
+            filenamePAQdata = glob.glob(os.path.join(info.recordingList.analysispathname[ind], "paq-data.pkl"))
+            info.recordingList.loc[ind, 'PAQdataFound'] = 1 if len(filenamePAQdata) > 0 else 0
+
+        # ---- Step 2: CSV ----
+        if pd.isna(info.recordingList.loc[ind, 'CSVcreated']):
+            filenameCSV = os.path.join(info.recordingList.analysispathname[ind],
+                                       info.recordingList.sessionName[ind] + "_CorrectedeventTimes.csv")
+            info.recordingList.loc[ind, 'CSVcreated'] = 1 if os.path.exists(filenameCSV) else 0
+            info.recordingList.loc[ind, 'CSVpath'] = filenameCSV
+
+        # ---- Step 3: Suite2p ----
+        if pd.isna(info.recordingList.loc[ind, 'suite2Pcreated']):
+            tiff_path = info.recordingList.imagingTiffFileNames[ind]
+            suite2p_dir = os.path.join(tiff_path, "suite2p")
+            info.recordingList.loc[ind, 'suite2Pcreated'] = 1 if os.path.isdir(suite2p_dir) else 0
+
+        # ---- Step 4: imaging.pkl ----
+        if pd.isna(info.recordingList.loc[ind, 'dffcreated']):
+            filenameDFF = os.path.join(info.recordingList.analysispathname[ind], 'imaging-data.pkl')
+            info.recordingList.loc[ind, 'dffcreated'] = 1 if os.path.exists(filenameDFF) else 0
+
+    return info
+
+
+def build_trial_types(behData: pd.DataFrame,
+                      rewarded: pd.Series,
+                      choice: pd.Series,
+                      stimSide: pd.Series,
+                      stimulus: np.ndarray,
+                      recordingSideStim: pd.Series,
+                      biasStim: pd.Series,
+                      recordingSideChoice: pd.Series,
+                      biasChoice: pd.Series) -> tuple[list[str], list[np.ndarray]]:
+    """
+    Reproduces your exact tTypesName + tTypes logic as arrays of booleans.
+    """
+    tTypesName = [
+        'Rewarded','Unrewarded',
+        'Left Choices','Right Choices',
+        'Rewarded Left','Rewarded Right',
+        'Unrewarded Left','Unrewarded Right',
+        'Left','Right',
+        '-0.0625','-0.125','-0.25','-0.5','0',
+        '0.0625','0.125','0.25','0.5',
+        '-0.0625 Rewarded','-0.125 Rewarded','-0.25 Rewarded','-0.5 Rewarded',
+        '0.0625 Rewarded','0.125 Rewarded','0.25 Rewarded','0.5 Rewarded','0 Rewarded',
+        '-0.0625 Unrewarded','-0.125 Unrewarded','-0.25 Unrewarded','-0.5 Unrewarded',
+        '0.0625 Unrewarded','0.125 Unrewarded','0.25 Unrewarded','0.5 Unrewarded','0 Unrewarded',
+        '-0.0625 Rewarded Hemi Ipsi','-0.125 Rewarded Hemi Ipsi','-0.25 Rewarded Hemi Ipsi','-0.5 Rewarded Hemi Ipsi',
+        '0.0625 Rewarded Hemi Ipsi','0.125 Rewarded Hemi Ipsi','0.25 Rewarded Hemi Ipsi','0.5 Rewarded Hemi Ipsi','0 Rewarded Hemi Ipsi',
+        '-0.0625 Rewarded Hemi Contra','-0.125 Rewarded Hemi Contra','-0.25 Rewarded Hemi Contra','-0.5 Rewarded Hemi Contra',
+        '0.0625 Rewarded Hemi Contra','0.125 Rewarded Hemi Contra','0.25 Rewarded Hemi Contra','0.5 Rewarded Hemi Contra','0 Rewarded Hemi Contra',
+        '-0.0625 Rewarded Bias Ipsi','-0.125 Rewarded Bias Ipsi','-0.25 Rewarded Bias Ipsi','-0.5 Rewarded Bias Ipsi',
+        '0.0625 Rewarded Bias Ipsi','0.125 Rewarded Bias Ipsi','0.25 Rewarded Bias Ipsi','0.5 Rewarded Bias Ipsi','0 Rewarded Bias Ipsi',
+        '-0.0625 Rewarded Bias Contra','-0.125 Rewarded Bias Contra','-0.25 Rewarded Bias Contra','-0.5 Rewarded Bias Contra',
+        '0.0625 Rewarded Bias Contra','0.125 Rewarded Bias Contra','0.25 Rewarded Bias Contra','0.5 Rewarded Bias Contra','0 Rewarded Bias Contra',
+        '-0.0625 Rewarded Hemi Ipsi Bias Ipsi','-0.125 Rewarded Hemi Ipsi Bias Ipsi','-0.25 Rewarded Hemi Ipsi Bias Ipsi','-0.5 Rewarded Hemi Ipsi Bias Ipsi',
+        '0.0625 Rewarded Hemi Ipsi Bias Ipsi','0.125 Rewarded Hemi Ipsi Bias Ipsi','0.25 Rewarded Hemi Ipsi Bias Ipsi','0.5 Rewarded Hemi Ipsi Bias Ipsi','0 Rewarded Hemi Ipsi Bias Ipsi',
+        '-0.0625 Rewarded Hemi Ipsi Bias Contra','-0.125 Rewarded Hemi Ipsi Bias Contra','-0.25 Rewarded Hemi Ipsi Bias Contra','-0.5 Rewarded Hemi Ipsi Bias Contra',
+        '0.0625 Rewarded Hemi Ipsi Bias Contra','0.125 Rewarded Hemi Ipsi Bias Contra','0.25 Rewarded Hemi Ipsi Bias Contra','0.5 Rewarded Hemi Ipsi Bias Contra','0 Rewarded Hemi Ipsi Bias Contra',
+        '-0.0625 Rewarded Hemi Contra Bias Ipsi','-0.125 Rewarded Hemi Contra Bias Ipsi','-0.25 Rewarded Hemi Contra Bias Ipsi','-0.5 Rewarded Hemi Contra Bias Ipsi',
+        '0.0625 Rewarded Hemi Contra Bias Ipsi','0.125 Rewarded Hemi Contra Bias Ipsi','0.25 Rewarded Hemi Contra Bias Ipsi','0.5 Rewarded Hemi Contra Bias Ipsi','0 Rewarded Hemi Contra Bias Ipsi',
+        '-0.0625 Rewarded Hemi Contra Bias Contra','-0.125 Rewarded Hemi Contra Bias Contra','-0.25 Rewarded Hemi Contra Bias Contra','-0.5 Rewarded Hemi Contra Bias Contra',
+        '0.0625 Rewarded Hemi Contra Bias Contra','0.125 Rewarded Hemi Contra Bias Contra','0.25 Rewarded Hemi Contra Bias Contra','0.5 Rewarded Hemi Contra Bias Contra','0 Rewarded Hemi Contra Bias Contra',
+        'Stim Hemi Ipsi','Stim Hemi Contra',
+        'Stim Bias Ipsi','Stim Bias Contra',
+        'Choice Bias Ipsi','Choice Bias Contra',
+        'Choice Hemi Ipsi','Choice Hemi Contra'
+    ]
+
+    # Build boolean arrays
+    rewarded_bool = rewarded.to_numpy() == True
+    choice_l = (choice == 'Left').to_numpy()
+    choice_r = (choice == 'Right').to_numpy()
+    stim_l   = (stimSide == 'Left').to_numpy()
+    stim_r   = (stimSide == 'Right').to_numpy()
+
+    stim_eq  = (stimulus == 0)
+    stim_vals = {
+        '-0.0625': (stimulus == -0.0625),
+        '-0.125':  (stimulus == -0.125),
+        '-0.25':   (stimulus == -0.25),
+        '-0.5':    (stimulus == -0.5),
+        '0.0625':  (stimulus == 0.0625),
+        '0.125':   (stimulus == 0.125),
+        '0.25':    (stimulus == 0.25),
+        '0.5':     (stimulus == 0.5),
+        '0':       (stimulus == 0)
+    }
+
+    hemi_ipsi  = (recordingSideStim == 'ipsi').to_numpy()
+    hemi_contra= (recordingSideStim == 'contra').to_numpy()
+    bias_is    = (biasStim == 'bias').to_numpy()
+    bias_nb    = (biasStim == 'no bias').to_numpy()
+    ch_bias_i  = (biasChoice == 'bias').to_numpy()
+    ch_bias_c  = (biasChoice == 'no bias').to_numpy()
+    ch_hemi_i  = (recordingSideChoice == 'ipsi').to_numpy()
+    ch_hemi_c  = (recordingSideChoice == 'contra').to_numpy()
+
+    tTypes: list[np.ndarray] = [
+        rewarded_bool, ~rewarded_bool,
+        choice_l, choice_r,
+        rewarded_bool & choice_l, rewarded_bool & choice_r,
+        (~rewarded_bool) & choice_l, (~rewarded_bool) & choice_r,
+        stim_l, stim_r,
+        stim_vals['-0.0625'], stim_vals['-0.125'], stim_vals['-0.25'], stim_vals['-0.5'], stim_vals['0'],
+        stim_vals['0.0625'],  stim_vals['0.125'],  stim_vals['0.25'],  stim_vals['0.5'],
+        rewarded_bool & stim_vals['-0.0625'],
+        rewarded_bool & stim_vals['-0.125'],
+        rewarded_bool & stim_vals['-0.25'],
+        rewarded_bool & stim_vals['-0.5'],
+        rewarded_bool & stim_vals['0.0625'],
+        rewarded_bool & stim_vals['0.125'],
+        rewarded_bool & stim_vals['0.25'],
+        rewarded_bool & stim_vals['0.5'],
+        rewarded_bool & stim_vals['0'],
+        (~rewarded_bool) & stim_vals['-0.0625'],
+        (~rewarded_bool) & stim_vals['-0.125'],
+        (~rewarded_bool) & stim_vals['-0.25'],
+        (~rewarded_bool) & stim_vals['-0.5'],
+        (~rewarded_bool) & stim_vals['0.0625'],
+        (~rewarded_bool) & stim_vals['0.125'],
+        (~rewarded_bool) & stim_vals['0.25'],
+        (~rewarded_bool) & stim_vals['0.5'],
+        (~rewarded_bool) & stim_vals['0'],
+
+        hemi_ipsi  & stim_vals['-0.0625'] & rewarded_bool,
+        hemi_ipsi  & stim_vals['-0.125']  & rewarded_bool,
+        hemi_ipsi  & stim_vals['-0.25']   & rewarded_bool,
+        hemi_ipsi  & stim_vals['-0.5']    & rewarded_bool,
+        hemi_ipsi  & stim_vals['0.0625']  & rewarded_bool,
+        hemi_ipsi  & stim_vals['0.125']   & rewarded_bool,
+        hemi_ipsi  & stim_vals['0.25']    & rewarded_bool,
+        hemi_ipsi  & stim_vals['0.5']     & rewarded_bool,
+        hemi_ipsi  & stim_vals['0']       & rewarded_bool,
+
+        hemi_contra & stim_vals['-0.0625'] & rewarded_bool,
+        hemi_contra & stim_vals['-0.125']  & rewarded_bool,
+        hemi_contra & stim_vals['-0.25']   & rewarded_bool,
+        hemi_contra & stim_vals['-0.5']    & rewarded_bool,
+        hemi_contra & stim_vals['0.0625']  & rewarded_bool,
+        hemi_contra & stim_vals['0.125']   & rewarded_bool,
+        hemi_contra & stim_vals['0.25']    & rewarded_bool,
+        hemi_contra & stim_vals['0.5']     & rewarded_bool,
+        hemi_contra & stim_vals['0']       & rewarded_bool,
+
+        bias_is & stim_vals['-0.0625'] & rewarded_bool,
+        bias_is & stim_vals['-0.125']  & rewarded_bool,
+        bias_is & stim_vals['-0.25']   & rewarded_bool,
+        bias_is & stim_vals['-0.5']    & rewarded_bool,
+        bias_is & stim_vals['0.0625']  & rewarded_bool,
+        bias_is & stim_vals['0.125']   & rewarded_bool,
+        bias_is & stim_vals['0.25']    & rewarded_bool,
+        bias_is & stim_vals['0.5']     & rewarded_bool,
+        bias_is & stim_vals['0']       & rewarded_bool,
+
+        bias_nb & stim_vals['-0.0625'] & rewarded_bool,
+        bias_nb & stim_vals['-0.125']  & rewarded_bool,
+        bias_nb & stim_vals['-0.25']   & rewarded_bool,
+        bias_nb & stim_vals['-0.5']    & rewarded_bool,
+        bias_nb & stim_vals['0.0625']  & rewarded_bool,
+        bias_nb & stim_vals['0.125']   & rewarded_bool,
+        bias_nb & stim_vals['0.25']    & rewarded_bool,
+        bias_nb & stim_vals['0.5']     & rewarded_bool,
+        bias_nb & stim_vals['0']       & rewarded_bool,
+
+        hemi_ipsi   & stim_vals['-0.0625'] & rewarded_bool & bias_is,
+        hemi_ipsi   & stim_vals['-0.125']  & rewarded_bool & bias_is,
+        hemi_ipsi   & stim_vals['-0.25']   & rewarded_bool & bias_is,
+        hemi_ipsi   & stim_vals['-0.5']    & rewarded_bool & bias_is,
+        hemi_ipsi   & stim_vals['0.0625']  & rewarded_bool & bias_is,
+        hemi_ipsi   & stim_vals['0.125']   & rewarded_bool & bias_is,
+        hemi_ipsi   & stim_vals['0.25']    & rewarded_bool & bias_is,
+        hemi_ipsi   & stim_vals['0.5']     & rewarded_bool & bias_is,
+        hemi_ipsi   & stim_vals['0']       & rewarded_bool & bias_is,
+
+        hemi_ipsi   & stim_vals['-0.0625'] & rewarded_bool & bias_nb,
+        hemi_ipsi   & stim_vals['-0.125']  & rewarded_bool & bias_nb,
+        hemi_ipsi   & stim_vals['-0.25']   & rewarded_bool & bias_nb,
+        hemi_ipsi   & stim_vals['-0.5']    & rewarded_bool & bias_nb,
+        hemi_ipsi   & stim_vals['0.0625']  & rewarded_bool & bias_nb,
+        hemi_ipsi   & stim_vals['0.125']   & rewarded_bool & bias_nb,
+        hemi_ipsi   & stim_vals['0.25']    & rewarded_bool & bias_nb,
+        hemi_ipsi   & stim_vals['0.5']     & rewarded_bool & bias_nb,
+        hemi_ipsi   & stim_vals['0']       & rewarded_bool & bias_nb,
+
+        hemi_contra & stim_vals['-0.0625'] & rewarded_bool & bias_is,
+        hemi_contra & stim_vals['-0.125']  & rewarded_bool & bias_is,
+        hemi_contra & stim_vals['-0.25']   & rewarded_bool & bias_is,
+        hemi_contra & stim_vals['-0.5']    & rewarded_bool & bias_is,
+        hemi_contra & stim_vals['0.0625']  & rewarded_bool & bias_is,
+        hemi_contra & stim_vals['0.125']   & rewarded_bool & bias_is,
+        hemi_contra & stim_vals['0.25']    & rewarded_bool & bias_is,
+        hemi_contra & stim_vals['0.5']     & rewarded_bool & bias_is,
+        hemi_contra & stim_vals['0']       & rewarded_bool & bias_is,
+
+        hemi_contra & stim_vals['-0.0625'] & rewarded_bool & bias_nb,
+        hemi_contra & stim_vals['-0.125']  & rewarded_bool & bias_nb,
+        hemi_contra & stim_vals['-0.25']   & rewarded_bool & bias_nb,
+        hemi_contra & stim_vals['-0.5']    & rewarded_bool & bias_nb,
+        hemi_contra & stim_vals['0.0625']  & rewarded_bool & bias_nb,
+        hemi_contra & stim_vals['0.125']   & rewarded_bool & bias_nb,
+        hemi_contra & stim_vals['0.25']    & rewarded_bool & bias_nb,
+        hemi_contra & stim_vals['0.5']     & rewarded_bool & bias_nb,
+        hemi_contra & stim_vals['0']       & rewarded_bool & bias_nb,
+
+        hemi_ipsi, hemi_contra,
+        bias_is,  bias_nb,
+        ch_bias_i, ch_bias_c,
+        ch_hemi_i, ch_hemi_c
+    ]
+
+    return tTypesName, tTypes
+
+
+
+
+
+
+

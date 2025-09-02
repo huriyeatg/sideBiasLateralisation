@@ -1,0 +1,3 @@
+[submodule "LakLabAnalysis"]
+	path = LakLabAnalysis
+	url = https://github.com/LakLab/LakLabAnalysis.git

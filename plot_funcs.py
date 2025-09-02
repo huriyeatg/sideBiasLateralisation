@@ -89,7 +89,7 @@ def save_figureAll(name,base_path):
 
 def lineplot_sessions(dffTrace_mean, analysis_params, colormap,
                     duration, zscoreRun, savefigname, savefigpath, baseline_subtract=None, title=None):
-    plt.figure(figsize=(5, 3))
+    plt.figure(figsize=(10, 6))
     """
     Plots session mean traces for given analysis parameters and saves the figure.
     Optionally applies baseline subtraction and z-scoring.
@@ -169,7 +169,7 @@ def lineplot_sessions(dffTrace_mean, analysis_params, colormap,
     # Set the title if provided
     if title is not None:
         plt.title(title)
-    save_figureAll(savefigname, savefigpath)
+    save_figure(savefigname, savefigpath)
 
 def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
                        selectedSession, duration, savefigname, savefigpath ) :
@@ -204,7 +204,8 @@ def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
 
         grid_ratio = [1 for _ in range(len(analysis_params))]
         grid_ratio.append(0.05) # for the colorbar
-        fig, axes = plt.subplots(nrows=1, ncols=len(analysis_params)+1, figsize=((len(analysis_params)+1)*2.5, 1.5), 
+
+        fig, axes = plt.subplots(nrows=1, ncols=len(analysis_params)+1, figsize=((len(analysis_params)+1)*5,10 ), 
                                 gridspec_kw={'width_ratios': grid_ratio})
 
         for idx, sessionData in enumerate(sessionsData):
@@ -226,6 +227,10 @@ def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
                 x_labels = np.linspace(-2, 6, plot_data.shape[1], dtype = int)
                 xticks = np.arange(0, len(x_labels), step)
                 xticklabels = x_labels[::step]
+
+                # create ylabels - lets find out the number of cells
+                nCell = plot_data.shape[0] 
+                ylabel = np.arange(0, nCell+1, 50)
                 
                 ax = sns.heatmap(plot_data, vmin = yminValue, vmax = ymaxValue, cbar = False, yticklabels = False,cmap = colormap, ax = axes[idx])
                 ax.axvline(x=pre_frames, color='w', linewidth = 3)
@@ -241,7 +246,10 @@ def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
         # Create a dummy heatmap solely for the color bar
         cax = axes[-1].inset_axes([0.2, 0.2, 0.6, 0.6])
         sns.heatmap(np.zeros((1, 1)), ax=cax, cbar=True, cbar_ax=axes[-1], cmap=colormap, cbar_kws={'label': 'DFF','shrink': 0.5})
+        # add ylabel
+        axes[0].set_ylabel(ylabel)
         axes[0].set_ylabel('Cells')
+
         save_figure(savefigname,savefigpath)
 
 def histogram_sessions(dffTrace_mean,analysis_params,colormap, zscoreRun, savefigname, savefigpath ) :

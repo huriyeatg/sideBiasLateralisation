@@ -17,7 +17,7 @@ bidi_corrected: true
 num_workers: 0
 num_workers_roi: 0
 do_registration: true     
-two_step_registration: 0.0
+two_step_registration: true
 keep_movie_raw: false
 nonrigid: true
 useGPU: true

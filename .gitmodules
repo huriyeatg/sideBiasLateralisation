@@ -1,3 +1,9 @@
 [submodule "LakLabAnalysis"]
 	path = LakLabAnalysis
 	url = https://github.com/LakLab/LakLabAnalysis.git
+[submodule "Rigbox"]
+	path = Rigbox
+	url = https://github.com/huriyeatg/Rigbox.git
+[submodule "gramm"]
+	path = gramm
+	url = https://github.com/piermorel/gramm.git

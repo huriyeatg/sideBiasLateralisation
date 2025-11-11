@@ -12,9 +12,9 @@ import os
 from scipy.stats import ttest_ind
 import itertools
 from collections import defaultdict
+import matplotlib.pyplot as plt
+import json
 
-
-import os
 
 
 def set_figure():
@@ -37,7 +37,6 @@ def set_figure():
             'legend.fontsize': 'large'}
     
     rcParams.update(params)
-
 
 def lineplot_withSEM_pupil (data, colorInd, label, axis):
     #lineplot_matrix(data=pupil_arr[session.outcome=='hit'], x_axis=x_axis, color=COLORS[0], label='hit')
@@ -84,8 +83,8 @@ def save_figure(name,base_path):
 def save_figureAll(name,base_path):
     plt.savefig(os.path.join(base_path, f'{name}.png'), 
                 bbox_inches='tight', transparent=False)
-    plt.savefig(os.path.join(base_path, f'{name}.svg'), 
-               bbox_inches='tight', transparent=True)
+    # plt.savefig(os.path.join(base_path, f'{name}.svg'), 
+    #            bbox_inches='tight', transparent=True)
 
 def lineplot_sessions(dffTrace_mean, analysis_params, colormap,
                     duration, zscoreRun, savefigname, savefigpath, baseline_subtract=None, title=None):
@@ -229,26 +228,30 @@ def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
                 xticklabels = x_labels[::step]
 
                 # create ylabels - lets find out the number of cells
-                nCell = plot_data.shape[0] 
-                ylabel = np.arange(0, nCell+1, 50)
+                nCell = plot_data.shape[0]
+                step = 10 if nCell <= 500 else 100
+                yticks = np.arange(0, nCell, step)          # positions (0-based, row indices)
+                yticklabs = (yticks).astype(int)        # labels shown (1-based cell numbers)
                 
                 ax = sns.heatmap(plot_data, vmin = yminValue, vmax = ymaxValue, cbar = False, yticklabels = False,cmap = colormap, ax = axes[idx])
                 ax.axvline(x=pre_frames, color='w', linewidth = 3)
                 ax.set_xticks (ticks = xticks, labels= xticklabels)
                 ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
+                ax.set_yticks(yticks + 0.5)
+                ax.set_yticklabels(yticklabs)
                 ax.set_xlim(30,pre_frames+yaxis_length)
                 ax.set_xlabel('Time (sec)')
                 ax.set_title(analysis_params[idx])
 
-        # Create a color bar for all heatmaps next to the last subplot
-        # Hide the y-axis label for the dummy heatmap
-        axes[-1].set_yticks([])
+                if idx == 0:
+                    ax.set_ylabel('Cells')
+                else:
+                    ax.set_ylabel('')
+                    ax.tick_params(axis='y', left=False, labelleft=False)
+
         # Create a dummy heatmap solely for the color bar
         cax = axes[-1].inset_axes([0.2, 0.2, 0.6, 0.6])
         sns.heatmap(np.zeros((1, 1)), ax=cax, cbar=True, cbar_ax=axes[-1], cmap=colormap, cbar_kws={'label': 'DFF','shrink': 0.5})
-        # add ylabel
-        axes[0].set_ylabel(ylabel)
-        axes[0].set_ylabel('Cells')
 
         save_figure(savefigname,savefigpath)
 
@@ -403,14 +406,9 @@ def plot_combined_psychometric(info, save_path=None, return_df=False):
         save_path: Path where to save the figure. If None, only shows the figure
         return_df: If True, returns a DataFrame with sessionName and diff (mean(0 contrast) - 0.5)
     """
-    import matplotlib.pyplot as plt
-    import numpy as np
-    from scipy import stats
-    import pandas as pd
-    import os
     
     # Create figure with two subplots
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.5, 3))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
     
     # Dictionary to store probabilities for each contrast across sessions
     contrast_probs = {}
@@ -421,7 +419,7 @@ def plot_combined_psychometric(info, save_path=None, return_df=False):
     for ind in range(len(info.recordingList)):
         try:
             session = info.recordingList.sessionName[ind]
-            print(f"\nProcessing session: {session}")
+            #print(f"\nProcessing session: {session}")
             
             # Construct CSV path
             csv_path = os.path.join(info.recordingList.analysispathname[ind], 
@@ -467,36 +465,40 @@ def plot_combined_psychometric(info, save_path=None, return_df=False):
             print(f"Error processing session {session}: {str(e)}")
             continue
     # Calculate mean and standard error for each contrast
-    contrasts = sorted(contrast_probs.keys())
+    EXCLUDE = np.array([-0.0625, 0.0625], dtype=float)
+    keys_sorted = sorted(contrast_probs.keys(), key=float)
+    contrasts = [k for k in keys_sorted
+             if not np.any(np.isclose(float(k), EXCLUDE, rtol=0, atol=1e-12))]
+    print(contrasts)
     mean_probs = [np.mean(contrast_probs[c]) for c in contrasts]
     sem_probs = [np.std(contrast_probs[c], ddof=1) / np.sqrt(len(contrast_probs[c])) 
                 for c in contrasts]
     # Plot combined mean with standard error
-    ax2.plot(contrasts, mean_probs, 'b-', label='Mean across sessions', linewidth=2)
+    ax2.plot(contrasts, mean_probs, 'k-', label='Mean across sessions', linewidth=2)
     ax2.fill_between(contrasts, 
                     np.array(mean_probs) - np.array(sem_probs),
                     np.array(mean_probs) + np.array(sem_probs),
-                    alpha=0.2, color='b')
+                    alpha=0.2, color='k')
     # Customize individual sessions plot
     ax1.set_xlabel('Contrast')
-    ax1.set_ylabel('p(Right) & 95% CI')
+    ax1.set_ylabel('P(Right) & 95% CI')
     ax1.set_title('Individual Sessions')
-    ax1.grid(True, alpha=0.3)
+    ax1.grid(True, alpha=0.2)
     ax1.legend()
-    ax1.set_xlim([-1, 1])
+    ax1.set_xlim([-0.6, 0.6])
     ax1.set_ylim([0, 1])
-    ax1.axhline(y=0.5, color='k', linestyle='--', alpha=0.3)
-    ax1.axvline(x=0, color='k', linestyle='--', alpha=0.3)
+    ax1.axhline(y=0.5, color='k', linestyle='--', alpha=0.2)
+    ax1.axvline(x=0, color='k', linestyle='--', alpha=0.2)
     # Customize combined plot
     ax2.set_xlabel('Contrast')
-    ax2.set_ylabel('p(Right) & SEM')
-    ax2.set_title('Combined Mean')
+    ax2.set_ylabel('P(Right)')
+    ax2.set_title('Mean & SEM (All sessions)')
     ax2.grid(True, alpha=0.3)
     ax2.legend()
-    ax2.set_xlim([-1, 1])
+    ax2.set_xlim([-0.6, 0.6])
     ax2.set_ylim([0, 1])
-    ax2.axhline(y=0.5, color='k', linestyle='--', alpha=0.3)
-    ax2.axvline(x=0, color='k', linestyle='--', alpha=0.3)
+    ax2.axhline(y=0.5, color='k', linestyle='--', alpha=0.2)
+    ax2.axvline(x=0, color='k', linestyle='--', alpha=0.2)
     plt.tight_layout()
     if save_path is not None:
         os.makedirs(save_path, exist_ok=True)
@@ -524,12 +526,6 @@ def plot_combined_response_time(info, analysis_path, save_path=None):
         analysis_path: String with the path to the analysis folder
         save_path: Path where to save the figure. If None, uses default path
     """
-    import matplotlib.pyplot as plt
-    import numpy as np
-    from scipy import stats
-    import pandas as pd
-    import os
-    import json
     
     # Load bias data from JSON
     json_path = os.path.join(analysis_path, 'bias_data.json')
@@ -730,8 +726,6 @@ def plot_combined_response_time(info, analysis_path, save_path=None):
     plt.close()
     
     print(f"Figure saved at: {full_save_path}")
-
-
 
 def plot_combined_dff_mean_by_contrast(info, zscoreRun=True, use_responsive_only=True, save_path=None):
     """
@@ -1414,12 +1408,6 @@ def plot_mean_dff_by_contrast(recordingList, event_type='stimulus',
     Shows the global mean as a black point with SEM.
     Performs baseline subtraction using the baseline_window before calculating the mean in the time window.
     """
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import pandas as pd
-    import seaborn as sns
-    import pickle
-    import os
     
     # Define frame rate and time parameters
     fRate_imaging = 30  # Hz
@@ -1554,7 +1542,7 @@ def plot_mean_dff_by_contrast(recordingList, event_type='stimulus',
     ax.set_xlabel('Contrast')
     ax.set_ylabel(f'Mean df/f')
     if title is None:
-        title = f'Mean df/f by contrast ({time_window[0]}-{time_window[1]}s post-{event_type}) - Rewarded trials - {subfolder} (baseline subtracted)'
+        title = f'AnalysisWin: {time_window[0]}-{time_window[1]}s post-{event_type} - Rewarded trials - {subfolder} (baseline subtracted)'
     ax.set_title(title, y=1.04, fontsize=14)
     ax.set_xscale('linear')
     ax.set_xticks(contrast_values)
@@ -1565,7 +1553,7 @@ def plot_mean_dff_by_contrast(recordingList, event_type='stimulus',
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.tight_layout()
     if save_path is not None:
-        save_figureAll(f'mean_dff_by_contrast_rewarded_{event_type}_{time_window[0]}_{time_window[1]}s_{subfolder}_baseline', save_path)
+        save_figureAll(f'DFF-Contrast_{event_type}_{time_window[0]}_{time_window[1]}', save_path)
     plt.close(fig)
     return fig
 
@@ -3121,7 +3109,6 @@ def plot_reward_aligned_stim_ipsi_contra_diff_scatter_window_across_sessions(
         save_figureAll(f'{save_name}_{time_window[0]}_{time_window[1]}', save_path)
     plt.close()
 
-
 def plot_aligned_by_contrasts(
     recordingList,
     subfolder='responsive_neurons',
@@ -3133,11 +3120,6 @@ def plot_aligned_by_contrasts(
     """
     Plot neural activity aligned to reward, choice, or stimulus for different contrasts, combining both sides (Left and Right).
     """
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import pickle
-    import os
-    import seaborn as sns
 
     print(f"Starting {alignment}-aligned activity by combined contrasts for all sessions...")
 
@@ -3220,7 +3202,7 @@ def plot_aligned_by_contrasts(
                 ax.axvline(0, color='k', linestyle=':', linewidth=1)
                 ax.set_xlabel(f'Time from {alignment.capitalize()} (s)')
                 ax.set_ylabel('df/f')
-                ax.set_title(f'{session_name} - Calcium activity by contrast')
+                ax.set_title(f'{session_name}')
                 ax.legend(fontsize=8, loc='upper right')
                 ax.grid(True, alpha=0.3)
                 ax.tick_params(axis='both', labelsize=14)
@@ -3950,11 +3932,6 @@ def plot_mean_sem_across_sessions_by_contrasts(
     Each curve is the mean trace (with SEM band) across sessions for a given contrast.
     Baseline subtraction is performed using the baseline_window (in seconds) if provided, otherwise the last 200 ms before the event is used by default.
     """
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import pickle
-    import os
-    import seaborn as sns
 
     # Default contrast conditions if not provided
     if contrast_conditions is None:
@@ -3976,7 +3953,7 @@ def plot_mean_sem_across_sessions_by_contrasts(
     # Dictionary to save the traces of each session by condition
     traces_by_contrast = {cond: [] for cond in contrast_conditions}
     time_axis = None
-
+    totalNumSes = 0
     for ind, recordingDate in enumerate(recordingList.recordingDate):
         if recordingList.imagingDataExtracted.iloc[ind] == 1:
             session_path = recordingList.analysispathname.iloc[ind]
@@ -3986,6 +3963,7 @@ def plot_mean_sem_across_sessions_by_contrasts(
             if not os.path.exists(pickle_file):
                 continue
             try:
+                totalNumSes += 1
                 with open(pickle_file, 'rb') as f:
                     dffTrace_mean_reward, dffTrace_mean_stimuli, dffTrace_mean_choice = pickle.load(f)
                 # Select the correct dictionary
@@ -4043,7 +4021,7 @@ def plot_mean_sem_across_sessions_by_contrasts(
     ax.set_xlabel(f'Time from {alignment.capitalize()} (s)')
     ax.set_ylabel('df/f')
     if title is None:
-        title = f'Mean ± SEM across sessions by contrast ({alignment}-aligned)'
+        title = f'All sessions n = {totalNumSes} ({alignment}-aligned)'
     fig.suptitle(title, y=1.04, fontsize=14)
     ax.legend(fontsize=10, bbox_to_anchor=(1.05, 1), loc='upper left')
     ax.grid(True, alpha=0.3)
@@ -4054,7 +4032,6 @@ def plot_mean_sem_across_sessions_by_contrasts(
     else:
         plt.show()
     return fig
-
 
 def plot_ipsi_contra_vs_bias_correlation(
     recordingList,
@@ -4161,7 +4138,6 @@ def plot_ipsi_contra_vs_bias_correlation(
     else:
         plt.show()
     return results_df
-
 
 def plot_event_aligned_stim_bias_diff_by_contrast_scatter_window_across_sessions(
     recordingList,

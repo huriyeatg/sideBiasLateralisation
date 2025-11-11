@@ -64,7 +64,7 @@ class analysis:
             print('No animal ID is given, so all animals will be processed: ' + str(animalList))
         badRecordingSessions = ['2023-07-07_1_OFZ008_Block.mat', '2023-07-07_3_OFZ008_Block.mat', # Not good ROIs
                                 ]
-        acceptableExpDef = {'Grating2AFC_variableStimSize',}
+        acceptableExpDef = {'Grating2AFC_variableStimSize','Grating2AFC_variableStimSize_variabledelay'}
         rows = []
         infoCreation = True
 
@@ -162,6 +162,32 @@ class analysis:
                                     str(self.recordingList.animalID[ind]) + '_' + 
                                     self.recordingList.recordingID[ind])   
                 self.recordingList.loc[ind,'analysispathname'] = os.path.join(analysispathname, '')
+
+
+def start_matlab_safely(mlroot=r"C:\Program Files\MATLAB\R2025a"):
+    import os
+    added = []
+    # Add MATLAB DLL dirs just long enough to start the engine
+    for p in [
+        os.path.join(mlroot, "bin", "win64"),
+        os.path.join(mlroot, "bin", "win64", "mvm_transport", "mvm_transport"),
+    ]:
+        try:
+            h = os.add_dll_directory(p)   # returns a handle we can close
+            added.append(h)
+        except Exception:
+            pass
+
+    import matlab.engine
+    eng = matlab.engine.start_matlab()
+
+    # Now drop those dirs so NumPy/SciPy/OpenCV use their own DLLs
+    for h in added:
+        try:
+            h.close()
+        except Exception:
+            pass
+    return eng
 
                     
 def convert_tiff2avi (imagename, outputsavename, fps=30.0):
@@ -596,6 +622,7 @@ def suite2p_extraction(
     ops_yaml_path: str,
     imagingDetails: Optional[dict] = None,
     genotype: Optional[str] = None,
+    channel_st: str = "Ch3",
 ):
     """
     Run Suite2p on a single TIFF using ops loaded from JSON, with optional overrides from imagingDetails.
@@ -610,9 +637,10 @@ def suite2p_extraction(
     base_soma_um : float     # soma diameter in microns to convert to pixels
     """
 
-    tiff_file = find_tiff_file(tiff_path, channel="Ch2")
+    tiff_file = find_tiff_file(tiff_path, channel=channel_st)
+    print(tiff_file)
     if not os.path.isfile(tiff_file):
-        raise FileNotFoundError(f"TIFF not found: {tiff_file}")
+        raise FileNotFoundError(f"TIFF not found: {tiff_file} - Check Channel name ({channel_st})")
 
 
     # 1) load ops from YAML
@@ -649,6 +677,7 @@ def suite2p_extraction(
     t0 = time.time()
     print("CuPy version:", cupy.__version__)
     print("CUDA device:", cupy.cuda.runtime.getDeviceProperties(0)['name'])
+
     print("Ops useGPU:", ops["useGPU"])
     res_ops = run_s2p(ops=ops, db=db)
     print(f"✓ Done in {time.time()-t0:.1f}s → {Path(tiff_path, 'plane0').as_posix()}")
@@ -698,7 +727,8 @@ def update_info(info):
     ("CSVcreated", "Int64"),
     ("CSVpath", "string"),         # <-- explicitly string
     ("suite2Pcreated", "Int64"),
-    ("dffcreated", "Int64")
+    ("dffcreated", "Int64"),
+    ("imagingDataExtracted", "Int64"),
     ]:
         if col not in info.recordingList.columns:
             info.recordingList[col] = pd.Series(dtype=dtype)
@@ -732,6 +762,10 @@ def update_info(info):
         if pd.isna(info.recordingList.loc[ind, 'dffcreated']):
             filenameDFF = os.path.join(info.recordingList.analysispathname[ind], 'imaging-data.pkl')
             info.recordingList.loc[ind, 'dffcreated'] = 1 if os.path.exists(filenameDFF) else 0
+        
+        if pd.isna(info.recordingList.loc[ind, 'imagingDataExtracted']):
+            filenameimaging = os.path.join(info.recordingList.analysispathname[ind], 'responsive_neurons','imaging-dffTrace.pkl')
+            info.recordingList.loc[ind, 'imagingDataExtracted'] = 1 if os.path.exists(filenameimaging) else 0
 
     return info
 

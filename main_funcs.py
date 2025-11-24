@@ -47,6 +47,12 @@ class analysis:
             self.recordingListPath = "C:/Users/Lak Lab/Documents/Github/sideBiasLateralisation"
             self.rawPath           = 'Z:/' 
             self.rootPath          = "C:/Users/Lak Lab/Documents/Github/sideBiasLateralisation"
+        elif platform.node() == 'WIN-AL024':
+            print("Computer: Yuliia Windows")
+            self.suite2pOutputPath = "C:/Users/yshevchuk/sideBiasL/sideBiasLateralisation/suite2p_output"
+            self.recordingListPath = "C:/Users/yshevchuk/sideBiasL/sideBiasLateralisation"
+            self.rawPath           = 'V:/' 
+            self.rootPath          = "C:/Users/yshevchuk/sideBiasL/sideBiasLateralisation"
         else:
             print('Computer setting is not set.')
         self.analysisPath = os.path.join(self.rootPath, 'analysis') # 'D:\\decision-making-ev\\analysis' # 
@@ -125,6 +131,14 @@ class analysis:
                     twoP_exist = len(tiff_files) > 0
                     imaging_filename = tiff_files[0] if twoP_exist else None
 
+                    # Check whether eye and face recordings exist 
+                    camera_path = os.path.join(os.path.dirname(root), '1')
+                    facecam_filename = glob.glob(os.path.join(camera_path, '*_face.mp4'))
+                    facecam_exist = len(facecam_filename) > 0
+
+                    eyecam_filename = glob.glob(os.path.join(camera_path, '*_eye.mp4'))
+                    eyecam_exist = len(eyecam_filename) > 0
+
                     # Collect row
                     row_data = {
                         'animalID': animal_id, 
@@ -132,8 +146,12 @@ class analysis:
                         'recordingID': recording_id, 
                         'sessionName': fileName[:-10],
                         'twoP': twoP_exist,
+                        'facecam': facecam_exist,
+                        'eyecam': eyecam_exist,
                         'path': os.path.dirname(root),
                         'imagingTiffFileNames': imaging_filename,
+                        'facecamFileNames': facecam_filename[0] if facecam_exist else None,
+                        'eyecamFileNames': eyecam_filename[0] if eyecam_exist else None,
                         'sessionNameWithPath': file_path,
                         'blockName': fileName[:-10],
                         'experimentDefinition': expDef,

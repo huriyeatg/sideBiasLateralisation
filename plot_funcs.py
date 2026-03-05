@@ -87,14 +87,24 @@ def save_figureAll(name,base_path):
                bbox_inches='tight', transparent=True)
 
 def lineplot_sessions(dffTrace_mean, analysis_params, colormap,
-                    duration, zscoreRun, savefigname, savefigpath, baseline_subtract=None, title=None):
-    plt.figure(figsize=(10, 6))
+                    duration, zscoreRun, savefigname, savefigpath, baseline_subtract=None, 
+                    title=None, axes=None, cellSelection = None, visualParams = None) :
+
     """
     Plots session mean traces for given analysis parameters and saves the figure.
     Optionally applies baseline subtraction and z-scoring.
     If 'title' is provided, it will be set as the plot title.
     """
     color = sns.color_palette(colormap, len(analysis_params))
+    if visualParams is not None:
+        fRate_imaging =  visualParams['fps']  # Hz
+        pre_stim_sec = 2  # seconds before stimulus
+        total_time = 8  # total time window (-2 to 6 seconds)
+    else:
+        fRate_imaging = 30 # Hz
+        pre_stim_sec = 2  # seconds before stimulus
+        total_time = 8  # total time window (-2 to 6 seconds)
+
     sessionsData = {}
 
     for indx, params in enumerate(analysis_params):
@@ -111,9 +121,6 @@ def lineplot_sessions(dffTrace_mean, analysis_params, colormap,
                 # Calculate baseline from the specified time window
                 # Assuming baseline_subtract is in seconds and we need to convert to frames
                 # The time window is typically -2 to 6 seconds, so we need to map this
-                fRate_imaging = 30  # Hz
-                pre_stim_sec = 2  # seconds before stimulus
-                total_time = 8  # total time window (-2 to 6 seconds)
 
                 # Convert baseline window from seconds to frame indices
                 baseline_start_frame = int((baseline_subtract[0] + pre_stim_sec) * fRate_imaging)
@@ -137,11 +144,17 @@ def lineplot_sessions(dffTrace_mean, analysis_params, colormap,
     if int(duration[0]) > 5.1:
         print('Traces are only avaiable for 5 sec after onset defined time')
     else:
-        xaxis_length = int(duration[0]) * 30
-    plt.subplot(2, 2, 1)
+        xaxis_length = int(duration[0]) * fRate_imaging
+    if axes is None:
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6, 5))
+    else:
+        ax = axes
+        
     for idx, sessionData in enumerate(sessionsData):
         plot_data = sessionsData[idx]
         if type(plot_data) != type(None):
+            if cellSelection is not None:
+                plot_data = plot_data[cellSelection,:]
             x_labels = np.linspace(-2, 6, plot_data.shape[1], dtype=int)
             xticks = np.arange(0, len(x_labels), step)
             xticklabels = x_labels[::step]
@@ -150,62 +163,84 @@ def lineplot_sessions(dffTrace_mean, analysis_params, colormap,
             x = df['variable']
             y = df['value']
             lowess_smoothed = sm.nonparametric.lowess(y, x, frac=0.1)
-            ax = sns.lineplot(x=x, y=y, data=df, color=color[idx],
-                              label=analysis_params[idx])
-            plt.axvline(x=60, color='k', linestyle='--')
-            plt.xticks(ticks=xticks, labels=xticklabels)
-            ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
-            plt.xlim(30, 60 + xaxis_length)
-            plt.xlabel('Time (sec)')
+            sns.lineplot(x=x, y=y, data=df, color=color[idx],
+                              label=analysis_params[idx], ax=ax)
+            ax.axvline(x=pre_stim_sec*fRate_imaging, color='k', linestyle='--')
+            ax.set_xticks(ticks=xticks)
+            ax.set_xticklabels(xticklabels)
+            ax.set_xlim(fRate_imaging, pre_stim_sec*fRate_imaging + xaxis_length)
+            ax.set_xlabel('Time (sec)')
             if zscoreRun:
-                plt.ylabel('DFF(zscore)')
+                ax.set_ylabel('DFF(zscore)')
             else:
                 if baseline_subtract is not None:
-                    plt.ylabel('DFF (baseline subtracted)')
+                    ax.set_ylabel('DFF (baseline subtracted)')
                 else:
-                    plt.ylabel('DFF')
-            plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                    ax.set_ylabel('DFF')
+            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     # Set the title if provided
     if title is not None:
-        plt.title(title)
-    save_figure(savefigname, savefigpath)
+        ax.set_title(title)
+    if axes is None:
+        save_figure(savefigname, savefigpath)
 
 def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
-                       selectedSession, duration, savefigname, savefigpath ) :
-    ## Parameters
-    fRate = 1000/30
-    pre_frames    = 2000.0# in ms
-    pre_frames    = int(np.ceil(pre_frames/fRate))
-    post_frames   = 6000.0 # in ms
-    post_frames   = int(np.ceil(post_frames/fRate))
-    analysisWindowDur = 500 # in ms
-    analysisWindowDur = int(np.ceil(analysisWindowDur/fRate))
+                       selectedSession, duration, savefigname, savefigpath, axes = None,
+                        params= None ) :
+   
+    if params == None: ## Parameters
+        fps = 30 # for x ticks
+        fRate = 1000/fps
+        pre_frames    = 2000.0# in ms
+        pre_frames    = int(np.ceil(pre_frames/fRate))
+        post_frames   = 6000.0 # in ms
+        post_frames   = int(np.ceil(post_frames/fRate))
+        analysisWindowDur = 500 # in ms
+        analysisWindowDur = int(np.ceil(analysisWindowDur/fRate))
+    else:
+        fps = params['fps'] # for x ticks
+        fRate =params['fRate']
+        pre_frames    = params['pre_frames']# in ms
+        post_frames   = params['post_frames'] # in ms
+        analysisWindowDur = params['analysisWindowDur'] # in ms
+    
     sessionsData = [None] * len(analysis_params)
 
     for indx, params in enumerate(analysis_params) :
         array = dffTrace_mean[params]
         if np.array_equal(array, np.array(None)):
             sessionsData[indx] = None
+        # if there is only one cell/trace
+        elif array.shape[0] == 1:
+            nCell = array.shape[2] # This is trial number this time
+            analysis_window = array.shape[1]
+            array = np.reshape(array, (nCell, analysis_window))
+            sessionsData[indx] = zscore(array, axis=1)
+            YaxisLabelSt = 'Trial #'
         else:
             nCell = array.shape[0]
             analysis_window = array.shape[1]
             array = np.reshape(array, (nCell, analysis_window))
             sessionsData[indx]= zscore(array, axis = 1)
+            YaxisLabelSt = 'Cell #'
         
     ymaxValue = 2.5
     yminValue = -2.5
-    step = 30 # for x ticks
+    
     if int(duration[0]) > 5.1:
         print('Traces are only avaiable for 5 sec after onset defined time')
     else:
-        yaxis_length = int(duration[0])*30
+        yaxis_length = int(duration[0])*fps
     
 
         grid_ratio = [1 for _ in range(len(analysis_params))]
         grid_ratio.append(0.05) # for the colorbar
 
-        fig, axes = plt.subplots(nrows=1, ncols=len(analysis_params)+1, figsize=((len(analysis_params)+1)*5,10 ), 
+        if axes == None: 
+            fig, axes = plt.subplots(nrows=1, ncols=len(analysis_params)+1, figsize=((len(analysis_params)+1)*5,10 ), 
                                 gridspec_kw={'width_ratios': grid_ratio})
+        else:
+            axes = axes
 
         for idx, sessionData in enumerate(sessionsData):
             plot_data = sessionsData[idx]
@@ -223,9 +258,13 @@ def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
                 sortedInd = sortedInd[sortedInd < plot_data.shape[0]]
                 plot_data = plot_data[sortedInd]
                 
-                x_labels = np.linspace(-2, 6, plot_data.shape[1], dtype = int)
-                xticks = np.arange(0, len(x_labels), step)
-                xticklabels = x_labels[::step]
+                nT = plot_data.shape[1]
+                t = (np.arange(nT) - pre_frames) / fps   # time vector in seconds
+                tick_times = np.arange(-2, 7, 1)         # -2,-1,0,1,...,6
+                xticks = np.round(tick_times * fps + pre_frames).astype(int)
+                mask = (xticks >= 0) & (xticks < nT)
+                xticks = xticks[mask]
+                xticklabels = tick_times[mask]
 
                 # create ylabels - lets find out the number of cells
                 nCell = plot_data.shape[0]
@@ -233,21 +272,20 @@ def heatmap_sessions(dffTrace_mean,analysis_params, colormap,
                 yticks = np.arange(0, nCell, step)          # positions (0-based, row indices)
                 yticklabs = (yticks).astype(int)        # labels shown (1-based cell numbers)
                 
-                ax = sns.heatmap(plot_data, vmin = yminValue, vmax = ymaxValue, cbar = False, yticklabels = False,cmap = colormap, ax = axes[idx])
-                ax.axvline(x=pre_frames, color='w', linewidth = 3)
-                ax.set_xticks (ticks = xticks, labels= xticklabels)
-                ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
-                ax.set_yticks(yticks + 0.5)
-                ax.set_yticklabels(yticklabs)
-                ax.set_xlim(30,pre_frames+yaxis_length)
-                ax.set_xlabel('Time (sec)')
-                ax.set_title(analysis_params[idx])
-
+                axes[idx] = sns.heatmap(plot_data, vmin = yminValue, vmax = ymaxValue, cbar = False, yticklabels = False,cmap = colormap, ax = axes[idx])
+                axes[idx].axvline(x=pre_frames, color='w', linewidth = 3)
+                axes[idx].set_yticks(yticks + 0.5)
+                axes[idx].set_yticklabels(yticklabs)
                 if idx == 0:
-                    ax.set_ylabel('Cells')
+                    axes[idx].set_ylabel(YaxisLabelSt)
                 else:
-                    ax.set_ylabel('')
-                    ax.tick_params(axis='y', left=False, labelleft=False)
+                    axes[idx].set_ylabel('')
+                    axes[idx].tick_params(axis='y', left=False, labelleft=False)
+                axes[idx].set_xlim(fps,pre_frames+yaxis_length)
+                axes[idx].set_xticks (ticks = xticks, labels= xticklabels)
+                axes[idx].set_xticklabels(xticklabels, rotation=0)
+                axes[idx].set_xlabel('Time (sec)')
+                axes[idx].set_title(analysis_params[idx]+ '\n' + YaxisLabelSt + ': ' + str(plot_data.shape[0]))
 
         # Create a dummy heatmap solely for the color bar
         cax = axes[-1].inset_axes([0.2, 0.2, 0.6, 0.6])
@@ -395,7 +433,7 @@ def scatter_sessions(dffTrace_mean1, dffTrace_mean2, analysis_params,
 
     save_figureAll(savefigname,savefigpath)
 
-def plot_combined_psychometric(info, save_path=None, return_df=False):
+def plot_combined_psychometric(recordingList, save_fileName=None, return_df=False):
     """
     Creates two plots:
     1. Individual right turn probability vs contrast for each session
@@ -409,20 +447,18 @@ def plot_combined_psychometric(info, save_path=None, return_df=False):
     
     # Create figure with two subplots
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
-    
     # Dictionary to store probabilities for each contrast across sessions
     contrast_probs = {}
     # For the output DataFrame
     session_diffs = []
-    
     # For each session in recordingList
-    for ind in range(len(info.recordingList)):
+    for ind in range(len(recordingList)):
         try:
-            session = info.recordingList.sessionName[ind]
+            session = recordingList.sessionName[ind]
             #print(f"\nProcessing session: {session}")
             
             # Construct CSV path
-            csv_path = os.path.join(info.recordingList.analysispathname[ind], 
+            csv_path = os.path.join(recordingList.analysispathname[ind], 
                                   f"{session}_CorrectedeventTimes.csv")
             
             if not os.path.exists(csv_path):
@@ -494,7 +530,7 @@ def plot_combined_psychometric(info, save_path=None, return_df=False):
     # Customize combined plot
     ax2.set_xlabel('Contrast')
     ax2.set_ylabel('P(Right)')
-    ax2.set_title('Mean & SEM (All sessions n = {})'.format(len(info.recordingList)))
+    ax2.set_title('Mean & SEM (All sessions n = {})'.format(len(recordingList)))
     ax2.grid(True, alpha=0.3)
     #ax2.legend()
     ax2.set_xlim([-0.6, 0.6])
@@ -502,10 +538,8 @@ def plot_combined_psychometric(info, save_path=None, return_df=False):
     ax2.axhline(y=0.5, color='k', linestyle='--', alpha=0.2)
     ax2.axvline(x=0, color='k', linestyle='--', alpha=0.2)
     plt.tight_layout()
-    if save_path is not None:
-        os.makedirs(save_path, exist_ok=True)
-        animal_id = info.recordingList.animalID[0]
-        full_save_path = os.path.join(save_path, f'{animal_id}_combined_psychometric.png')
+    if save_fileName is not None: # Not so good practice to have this as a default
+        full_save_path = os.path.join(save_fileName)
         plt.savefig(full_save_path)
         plt.close()
         print(f"Figure saved at: {full_save_path}")
@@ -1402,7 +1436,7 @@ def plot_single_neuron_traces_by_contrast(dffTrace_stimuli, session_name, save_p
 def plot_mean_dff_by_contrast(recordingList, event_type='stimulus', 
                              time_window=[0.1, 0.8], save_path=None, title=None, 
                              subfolder='responsive_neurons', dffTrace_mean_dict=None, use_zscored=True, baseline_window=[-0.2, 0],
-                             contrasts_rewarded=None, contrast_values=None,
+                             contrasts_rewarded=None, contrast_values=None,response_type = 'all',
                              axis=None):
     """
     Plot mean df/f for a specific time window after an event as a function of contrast.
@@ -1480,7 +1514,8 @@ def plot_mean_dff_by_contrast(recordingList, event_type='stimulus',
                         # Ensure we have enough frames
                         if dffTrace_mean[contrast].shape[1] > end_frame:
                             # Baseline subtraction
-                            mean_trace = np.nanmean(dffTrace_mean[contrast], axis=0)
+                            mean_trace = np.nanmean(dffTrace_mean[contrast], axis=0) # across cells
+                            session_trace =  dffTrace_mean[contrast]
                             if baseline_window is not None:
                                 baseline_start_idx = np.argmin(np.abs(time_axis - baseline_window[0]))
                                 baseline_end_idx = np.argmin(np.abs(time_axis - baseline_window[1]))
@@ -1492,6 +1527,16 @@ def plot_mean_dff_by_contrast(recordingList, event_type='stimulus',
                                 baseline = np.nanmean(mean_trace[fRate_imaging*2 - baseline_frames:fRate_imaging*2])
                             # Subtract baseline from all cells' traces
                             dff_bs = dffTrace_mean[contrast] - baseline
+                            
+                            # Select the cell responsivity type
+                            if response_type =='excited':
+                                cellIndex = np.nanmean(session_trace[:, start_frame:end_frame], axis=1) > 0
+                            elif response_type =='inhibited':
+                                cellIndex = np.nanmean(session_trace[:, start_frame:end_frame], axis=1) < 0   
+                            elif response_type =='all':
+                                cellIndex = np.ones(session_trace.shape[0], dtype=bool)  # Use all cells if no specific type is selected
+                            dff_bs = dff_bs[cellIndex, :]
+
                             # Calculate mean across cells and time window
                             mean_dff = np.nanmean(dff_bs[:, start_frame:end_frame])
                             contrast_data[contrast].append({
@@ -4737,3 +4782,67 @@ def plot_mean_dff_by_contrast_hemi_bias_4panels(
     else:
         plt.show()
     return fig
+
+
+# Some functions required below
+def create_FOV_withSelectedCells(isCell, ops, s2p_path, analysispathname, savename,
+                                 stat = None):
+    prob_threshold = 0
+    cell_indices = np.where((isCell[:,1] > prob_threshold))[0]
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 12))
+
+    # Show mean image
+    ax.imshow(ops['meanImg'], cmap='binary_r')
+
+    # Load stat.npy to get cell coordinates
+    if stat is None:
+        stat = np.load(os.path.join(s2p_path, 'stat.npy'), allow_pickle=True)
+
+    # Generate random colors for each cell
+    colors = np.random.rand(len(cell_indices), 3)
+
+    # Draw ROIs of filtered cells
+    for idx, cell_number in enumerate(cell_indices):
+        stat_cell = stat[cell_number]
+        ypix = [stat_cell['ypix'][i] for i in range(len(stat_cell['ypix'])) if not stat_cell['overlap'][i]]
+        xpix = [stat_cell['xpix'][i] for i in range(len(stat_cell['xpix'])) if not stat_cell['overlap'][i]]
+        ax.plot(xpix, ypix, '.', markersize=1, alpha=0.7, color=colors[idx])
+
+    ax.set_title(f"Detected cells (prob > {prob_threshold}): {len(cell_indices)}")
+    ax.axis('off')
+    plt.show()
+    fig.savefig(
+        os.path.join(analysispathname, savename + "_MeanImG.png"),
+        dpi=300,          # higher resolution
+        bbox_inches='tight',  # trim whitespace
+        pad_inches=0.1,       # small padding
+        facecolor='white'     # ensure background matches
+    )
+
+    # Also show enhanced image (meanImgE) which might be clearer
+    fig, ax = plt.subplots(figsize=(12, 12))
+    ax.imshow(ops['meanImgE'], cmap='binary_r')
+
+    # Draw ROIs of filtered cells
+    for idx, cell_number in enumerate(cell_indices):
+        stat_cell = stat[cell_number]
+        ypix = [stat_cell['ypix'][i] for i in range(len(stat_cell['ypix'])) if not stat_cell['overlap'][i]]
+        xpix = [stat_cell['xpix'][i] for i in range(len(stat_cell['xpix'])) if not stat_cell['overlap'][i]]
+        ax.plot(xpix, ypix, '.', markersize=1, alpha=0.7, color=colors[idx])
+
+    ax.set_title(f"Detected cells (prob > {prob_threshold}): {len(cell_indices)}")
+    ax.axis('off')
+    # save this image in the analysis folder
+    fig.savefig(
+        os.path.join(analysispathname, savename + f"_FOV_withSelectedCells_{prob_threshold}.png"),
+        dpi=300,          # higher resolution
+        bbox_inches='tight',  # trim whitespace
+        pad_inches=0.1,       # small padding
+        facecolor='white'     # ensure background matches
+    )
+    #close the plot
+    plt.close(fig)
+
+

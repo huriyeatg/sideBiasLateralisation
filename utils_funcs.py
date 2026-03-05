@@ -15,6 +15,10 @@ from scipy import stats
 import scipy.io as spio
 from scipy import signal
 import pickle
+import LakLabAnalysis.Utility.utils_funcs as lutils
+import LakLabAnalysis.Utility.commonPlot_funcs as cpfun
+import main_funcs as mfun
+import plot_funcs as pfun
 
 # global plotting params
 params = {'legend.fontsize': 'x-large',
@@ -104,10 +108,14 @@ def s2p_loader(s2p_path, subtract_neuropil=True, neuropil_coeff=0.7):
     for i, s in enumerate(stat):
         s['original_index'] = i
 
-    all_cells = all_cells[is_cells, :]
-    neuropil = neuropil[is_cells, :]
-    spks = spks[is_cells, :]
-    stat = stat[is_cells]
+    # all_cells = all_cells[is_cells, :]
+    # neuropil = neuropil[is_cells, :]
+    # spks = spks[is_cells, :]
+    # stat = stat[is_cells]
+    all_cells = all_cells
+    neuropil = neuropil
+    spks = spks
+    stat = stat
 
 
     if not subtract_neuropil:
@@ -573,6 +581,8 @@ def test_responsive(flu, frame_clock, stim_times, pre_frames=10,
 
     # keep track of the previous stim frame to warn against overlap
     prev_frame = 0
+    # excluded nans from stim times - this only happens for the first trial !
+    stim_times = stim_times[~np.isnan(stim_times)]
 
     for i, stim_frame in enumerate(stim_times):
 
@@ -585,9 +595,8 @@ def test_responsive(flu, frame_clock, stim_times, pre_frames=10,
                   'reshaped to trial by trial'.format(i))
 
         prev_frame = stim_frame
-
-        pre_idx[stim_frame-pre_frames: stim_frame] = True
-        post_idx[stim_frame+offset: stim_frame+post_frames+offset] = True
+        pre_idx[int(stim_frame-pre_frames): int(stim_frame)] = True
+        post_idx[int(stim_frame+offset): int(stim_frame+post_frames+offset)] = True
 
     pre = flu[:, pre_idx]
     post = flu[:, post_idx]
@@ -1691,3 +1700,150 @@ def get_contra_ipsi_diff_cellwise_df(
                 continue
     df = pd.DataFrame(rows, columns=['xpix', 'ypix', 'contra_ipsi_diff', 'sessionName', 'cell_id', 'AP', 'ML'])
     return df
+
+# ops = mfun.construct_info_path(info, blockName, folder='s2p', file='ops', load='item')
+
+def snr_filter_cells(fluR, top_percentile=90, bottom_percentile=50, snr_thresh=2.4,
+                     zscore=True, info=None, blockName=None, plot=True, savepath=None,
+                     cell_radiusThreshold=5):
+    """ ST 08/2025: A method of filtering away suite2p ROIs which have such low SNR they excluded from analysis as 'non-cells'
+    :param: fluR                = (2D array) cell x time suite2p flu output; will be processed and normalised to be dF/F (z-score)
+    :param: top_percentile      = (float) percentile level for which signal is defined
+    :param: bottom_percentile   = (float) percentile level for which noise is defined
+    :param: snr_thresh          = (float) threshold of SNR above which ROIs are defined as cells
+    :param: zscore              = (boolean) whether or not to perform SNR calculation on z-scored flu
+    :param: info, blockName     = give if want to plot figures summarising effect of SNR filtering
+    :param: savepath            = if info & blockName given, define savepath to save summary figures
+    """
+
+    flu = fluR #lutils.preprocess_flu(fluR, detrend=True, do_zscore=zscore, plot=False, smooth_method=None)
+    signal, noise = np.percentile(abs(flu), top_percentile, axis=1), np.percentile(abs(flu), bottom_percentile, axis=1)
+    snr = abs(signal/noise)
+    
+    if info is not None and blockName is not None:
+        ind = lutils.dfIndFromValue([blockName], info.recordingList.blockName)[0]
+        imData = pd.read_pickle(os.path.join(info.recordingList.analysispathname[ind], 'imaging-data.pkl'))
+        stat = imData['stat']
+        ops_path = os.path.join(info.recordingList.imagingTiffFileNames[ind], 'suite2p', 'plane0','ops.npy')
+        ops = np.load(ops_path, allow_pickle=True).item()
+        #np.load(ops_path, allow_pickle=True)
+        stat_radius = np.asarray([stat_cell['radius'] for stat_cell in stat])
+        if snr_thresh=='auto': #remove 80% of small ROIs
+            snr_thresh = np.percentile(snr[np.where(stat_radius<=cell_radiusThreshold)[0]], 90)
+            cells_plot = np.where(snr>snr_thresh)[0]
+        else:
+            cells_plot = np.where((snr>snr_thresh) & (stat_radius>cell_radiusThreshold) )[0]
+        
+        removed_cells = [i for i in np.arange(stat.shape[0]) if i not in cells_plot]
+        print(f"Using SNR threshold {snr_thresh:.2f}, {len(removed_cells)} / {len(snr)} cells filtered out")
+
+        # Print quick specs
+        # Median radius (pixel) of non_cells vs cells
+        removed_cells_radius_median = np.median([stat_radius[i] for i in removed_cells])
+        cells_radius_median = np.median([stat_radius[i] for i in cells_plot])
+        print(f"Median radius for cells vs non cells = {cells_radius_median:.2f} // {removed_cells_radius_median:.2f}")
+        # Specify a threshold below which 95% of cells < 5 pixel in radius would fall
+        smallrois_snr = snr[np.where(stat_radius<=cell_radiusThreshold)[0]]
+        smallrois_snr95th = np.percentile(smallrois_snr, 95)
+        print(f'SNR threshold for 95th percentile of ROIs with radius < {cell_radiusThreshold} pixels = {smallrois_snr95th:.2f}')
+        # Tell how this snr threshold would 
+
+        if plot:
+            import matplotlib.gridspec as gridspec
+            pfun.set_figure()
+            fig = plt.figure(tight_layout=True, figsize=(10,7))
+            gs = gridspec.GridSpec(ncols=6, nrows=2, figure=fig)
+            
+            # Plot noise, signal, SNR per-ROI as a function of ROI radius
+            for i, (y, y_label) in enumerate(zip([noise, signal, snr], ['noise', 'signal', 'SNR'])):
+                ax = fig.add_subplot(gs[0, 2*i:2*i+2])
+                ax.scatter(stat_radius, y, alpha=0.8, s=5)
+                ax.set_xlabel('radius / pixel')
+                ax.set_ylabel(y_label)
+                if i==2: ax.axhline(snr_thresh, c='gray', ls=':')
+
+            # Plot ROI radius histogram before and after 
+            ax = fig.add_subplot(gs[1, :2])
+            ax.set_ylabel('Density')
+            ax.set_xlabel('ROI radius / pixel')
+            for i, (cells, legend_label) in enumerate(zip([np.arange(stat.shape[0]), cells_plot], ['all', 'filtered'])):
+                ax.hist([stat[i]['radius'] for i in cells], density=True, label=legend_label, alpha=0.5)
+                ax.legend()
+        
+            # Plot removed cell ROIs on ref image
+            ax_before = fig.add_subplot(gs[1,2:4])
+            ax_rmvd = fig.add_subplot(gs[1,4:])
+            ax_before.set_title('All')
+            ax_rmvd.set_title(f'Removed (-{len(removed_cells)})')
+            _, ax_before = cpfun.s2p_cellsOnFOV(ops, drawROIs=['meanImgE'], image_key=['meanImgE'], 
+                                axs=ax_before, cmap_fov='grey', blockName=blockName, 
+                                ROIs_key=None, stat=stat)
+            _, ax_rmvd = cpfun.s2p_cellsOnFOV(ops, drawROIs=['meanImgE'], image_key=['meanImgE'], 
+                                axs=ax_rmvd, cmap_fov='grey', blockName=blockName, 
+                                ROIs_key=removed_cells, stat=stat)
+            plt.tight_layout()
+            
+            # # Plot neural activity before and after??
+            # plot_trialTypes = ['0%', '100%'] if info.recordingList.reversal[ind]!=1 else ['0%-->100% (post-Rev)', '50% (post-Rev)', '100%-->0% (post-Rev)']
+            # fig2, _ = pfun.plot_neural_activity(blockName, info, trialTypes_list=[[plot_trialTypes, plot_trialTypes]],
+            #                             plot_type=['lineplot'], population=[['all', cells_plot]],
+            #                             alignment='StimulusAligned', baseline=True, 
+            #                             desired_pre_post_s=(1,5))
+            
+            if savepath is not None:
+                if savepath=='analysisPath': savepath = info.recordingList.analysisPath[ind]
+                assert os.path.exists(savepath), f"{savepath} does not exist; not saving figures"
+                fig.savefig(os.path.join(savepath, f'snr_filter_cells_{blockName}_summary.png'))
+               # fig2.savefig(os.path.join(savepath, f'snr_filter_cells_{blockName}_activityimpact.png'))
+                print(f"Saved figures in {savepath}")
+            plt.show()
+        # plt.close()
+
+    return cells_plot
+
+
+
+def singleTrace_splitter(flu, t_starts, pre_frames, post_frames):
+    """
+    Split a fluorescence matrix into trial-by-trial array.
+
+    flu: array-like
+        [num_cells x num_frames] OR [num_frames] for single cell
+    t_starts: iterable of ints
+        start frame index for each trial
+    pre_frames: int
+    post_frames: int
+
+    returns
+    trial_flu: np.ndarray
+        [num_cells x (pre_frames+post_frames) x num_trials]
+        If no valid trials, returns empty array with shape
+        [num_cells x (pre_frames+post_frames) x 0]
+    """
+    flu = np.asarray(flu)
+
+    # --- ensure flu is 2D: [num_cells x num_frames]
+    if flu.ndim == 1:
+        flu = flu[np.newaxis, :]  # shape (1, num_frames)
+    elif flu.ndim != 2:
+        raise ValueError(f"`flu` must be 1D or 2D, got shape {flu.shape}")
+
+    num_cells, num_frames = flu.shape
+    trial_len = pre_frames + post_frames
+
+    chunks = []
+    for t_start in t_starts:
+        t_start = int(t_start)
+        start = t_start - pre_frames
+        end = t_start + post_frames  # end is exclusive in slicing
+
+        # keep only trials fully inside imaging range
+        if start >= 0 and end <= num_frames:
+            chunks.append(flu[:, start:end])  # shape (num_cells, trial_len)
+
+    if len(chunks) == 0:
+        return np.empty((num_cells, trial_len, 0), dtype=flu.dtype)
+
+    # stack into [num_trials x num_cells x trial_len] then transpose
+    trial_flu = np.stack(chunks, axis=0).transpose(1, 2, 0)
+    return trial_flu

@@ -19,6 +19,8 @@ from suite2p.run_s2p import run_s2p
 from typing import Optional
 import os
 import cupy
+import LakLabAnalysis.Utility.utils_funcs as lutils
+import psychofit.psychofit as psy
 
 
 class analysis:
@@ -962,7 +964,512 @@ def build_trial_types(behData: pd.DataFrame,
 
 
 
+def construct_info_path(info, blockName, folder=None, file=None, load='path'):
+    """ ST 05/2025: 
+    """
+    assert isinstance(folder, str), 'Argument: folder must be strings'
+    assert blockName in info.recordingList.blockName.values, f"{blockName} not found in recordingList"
+    ind = lutils.dfIndFromValue(blockName, info.recordingList.blockName)[0]
+    animal = info.recordingList.animalID[ind]
+    
+    if folder in info.recordingList.columns:
+        folder_path = info.recordingList[folder][ind]
+    # Case 2: suite2p_path
+    elif folder=='s2p' or folder=='suite2p':
+        folder_path = os.path.join(info.suite2pOutputPath, animal, blockName,'plane0')
+    # Case 3: cellpose path
+    elif folder=='cellpose':
+        folder_path = os.path.join(info.recordingList.analysisPath[ind], 'cellpose')
+    # Case 4: cellpose/plane* path (with s2p outputs)
+    elif folder=='cellpose_plane':
+        folder_path = os.path.join(info.recordingList.analysisPath[ind], 'cellpose','plane0')
+
+    if file is not None:
+        possible_files = [f for f in glob.glob(folder_path + f'/*{file}*')]
+        if len(possible_files)==1:
+            final_path = possible_files[0]
+        elif len(possible_files)==0: 
+            print(f"No file was found using {folder} > {file} for {blockName}, errors possible.")
+            final_path = os.path.join(folder_path, file)
+        elif len(possible_files)>1: 
+            final_path = possible_files[0]
+            print(f'Multiple files found, returning the first: {final_path}')
+    else: final_path = folder_path
+
+    if load=='path': return final_path.replace('\\', '/')
+    elif load == 'item': 
+        if 'ops' in file or 'seg.npy' in file:
+            return np.load(final_path, allow_pickle=True).item()
+        elif 'stat' in file or file.endswith('.npy'):
+            return np.load(final_path, allow_pickle=True)
+        else: 
+            print(f"Item contingency has not been coded; beware errors")
+
+def compute_response_time(df: pd.DataFrame) -> pd.Series:
+    """
+    Response time definition:
+      RT = choiceCompleteTime - choiceStartTime
+    Returns a float series (seconds).
+    """
+    rt = df["choiceCompleteTime"] - df["choiceStartTime"]
+    return rt.astype(float)
+
+def find_motivation_cutoff_trial(df: pd.DataFrame, rt_col: str = "responseTime", factor: float = 4.0):
+    """
+    Find first trial index where RT > factor * mean(previous RTs).
+    Returns:
+      end_trial_number (int or None),
+      end_trial_row_index (int or None)
+
+    'previous average' interpreted as cumulative mean of all *prior* valid RT trials.
+    """
+    rt = df[rt_col].to_numpy(dtype=float)
+    trial_nums = df["trialNumber"].to_numpy()
+
+    prev_rts = []
+    for i in range(len(rt)):
+        cur = rt[i]
+        if np.isnan(cur):
+            continue
+
+        if len(prev_rts) >= 1:
+            prev_mean = np.nanmean(prev_rts)
+            # guard against weird prev_mean = 0
+            if prev_mean > 0 and cur > factor * prev_mean:
+                return int(trial_nums[i]), int(i)
+
+        prev_rts.append(cur)
+
+    return None, None
+
+def compute_zero_stim_bias(df: pd.DataFrame):
+    """
+    Compute P(Right | zero contrast).
+
+    Zero contrast trials:
+        contrastLeft == 0 AND contrastRight == 0
+
+    Returns:
+        p_right (float or NaN),
+        n_zero_trials (int),
+        n_right (int)
+    """
+    # select zero-contrast trials
+    mask = (
+        (df["contrastLeft"] == 0) &
+        (df["contrastRight"] == 0)
+    )
+
+    d = df.loc[mask]
+
+    n_zero = len(d)
+    if n_zero == 0:
+        return np.nan, 0, 0
+
+    n_right = int((d["choice"] == "Right").sum())
+    bias = n_right / n_zero
+    bias = bias-0.5
+
+    return bias
+
+def get_mean_dff_by_contrast_diff_df(
+    recordingList,
+    event_type="stimulus",
+    time_window=(0.1, 0.8),
+    baseline_window=(-0.2, 0.0),
+    subfolder="responsive_neurons",
+    use_zscored=True,
+    allowed_cdiffs=(-0.5, -0.25, -0.125, 0.125, 0.25, 0.5),
+    biasType = 'bias',
+):
+    """
+    Returns a DataFrame with mean dF/F per session per contrast-difference (Right - Left).
+
+    Assumes dffTrace_mean dict keys are like:
+        '-0.5 Rewarded', '-0.25 Rewarded', ..., '0.5 Rewarded'
+    i.e. the first token in the key is the numeric contrast difference.
+
+    Output columns:
+        animal, session, recordingDate, cDiff, mean_dff
+    """
+
+    fRate = 30
+    pre_stim_sec = 2
+    total_time = 8
+    n_frames = int(total_time * fRate)
+    time_axis = np.linspace(-pre_stim_sec, total_time - pre_stim_sec, n_frames)
+
+    start_frame = int((time_window[0] + pre_stim_sec) * fRate)
+    end_frame   = int((time_window[1] + pre_stim_sec) * fRate)
+
+    b0 = int(np.argmin(np.abs(time_axis - baseline_window[0])))
+    b1 = int(np.argmin(np.abs(time_axis - baseline_window[1])))
+    if b1 == b0:
+        b1 += 1
+
+    rows = []
+
+    for ind in range(len(recordingList.recordingDate)):
+        if recordingList.imagingDataExtracted[ind] != 1:
+            continue
+
+        animal_id = recordingList.animalID[ind]
+        session = recordingList.sessionName[ind]
+        recordingDate = recordingList.recordingDate[ind]
+        pathname = recordingList.analysispathname[ind]
+        subfolder_path = os.path.join(pathname, subfolder)
+        bias = recordingList[biasType][ind]
+        performance = recordingList.performance[ind]
+
+        pkl_name = "imaging-dffTrace_mean_zscored.pkl" if use_zscored else "imaging-dffTrace_mean.pkl"
+        pkl_path = os.path.join(subfolder_path, pkl_name)
+        if not os.path.exists(pkl_path):
+            continue
+
+        try:
+            with open(pkl_path, "rb") as f:
+                dff_reward, dff_stim, dff_choice = pickle.load(f)
+
+            if event_type.lower() == "stimulus":
+                dff_dict = dff_stim
+            elif event_type.lower() == "choice":
+                dff_dict = dff_choice
+            elif event_type.lower() == "reward":
+                dff_dict = dff_reward
+            else:
+                raise ValueError("event_type must be 'stimulus', 'choice', or 'reward'")
+
+            for key, arr in dff_dict.items():
+                if arr is None:
+                    continue
+                if arr.shape[1] <= end_frame:
+                    continue
+
+                # ✅ Correct parsing for your structure:
+                # key example: "-0.25 Rewarded" -> cDiff = -0.25
+                try:
+                    cDiff = float(str(key).split()[0])
+                except Exception:
+                    continue
+
+                # keep only requested cDiffs
+                if allowed_cdiffs is not None:
+                    if not np.isclose(cDiff, allowed_cdiffs).any():
+                        continue
+
+                # baseline subtraction (using mean trace over cells)
+                mean_trace = np.nanmean(arr, axis=0)  # (time,)
+                baseline = np.nanmean(mean_trace[b0:b1])
+                arr_bs = arr - baseline
+
+                mean_dff = float(np.nanmean(arr_bs[:, start_frame:end_frame]))
+
+                rows.append({
+                    "animal": animal_id,
+                    "session": session,
+                    "recordingDate": recordingDate,
+                    "cDiff": cDiff,
+                    "mean_dff": mean_dff,
+                    "bias": bias,
+                    "performance": performance,
+                })
+
+        except Exception as e:
+            print(f"Error in session {session}: {e}")
+            continue
+
+    return pd.DataFrame(rows)
+
+
+
+def fit_psy_AllContrasts(
+    df: pd.DataFrame,
+    stim_mode: str = "cDiff",   # "cDiff" or "contrastRight"
+    use_percent: bool = True,
+    params: dict | None = None
+):
+    """
+    Fit a psychometric curve using psy.mle_fit_psycho on *all available contrast levels*.
+
+    df must contain:
+        - contrastRight, contrastLeft (if stim_mode="cDiff")
+        - choice (string, e.g. "Right"/"Left")
+
+    Returns:
+        pars : np.ndarray
+        L    : float (likelihood or cost returned by library)
+        data : np.ndarray (3 x n matrix used for fit)
+        summary_df : pd.DataFrame (stim level, n trials, pRight)
+    """
+
+    if params is None:
+        # Your defaults
+        params = {
+            # The minimum allowable parameter values
+            'parmin': np.array([-50., 10., 0., 0.]),
+            # The maximum allowable parameter values
+            'parmax': np.array([50., 40., .3, .3]),
+            # Non-zero starting parameters, used to try to avoid local minima
+            'parstart': np.array([0., 20., .1, .1]),
+            # The number of fits to run
+            'nfits': 10
+        }
+
+    d = df.copy()
+
+    # ---- compute stimulus level per trial ----
+    if stim_mode == "cDiff":
+        # signed difference: Right - Left
+        d["stim"] = d["contrastRight"] - d["contrastLeft"]
+    elif stim_mode == "contrastRight":
+        d["stim"] = d["contrastRight"]
+    else:
+        raise ValueError("stim_mode must be 'cDiff' or 'contrastRight'")
+
+    # convert to % contrast if desired (recommended with your bounds)
+    if use_percent:
+        d["stim"] = d["stim"] * 100.0
+
+    # ---- compute rightward choice (0/1) ----
+    # (adjust if your choice labels differ)
+    d["isRight"] = (d["choice"] == "Right").astype(int)
+
+    # drop missing
+    d = d.dropna(subset=["stim", "isRight"])
+
+    # ---- group by stimulus level ----
+    g = (
+        d.groupby("stim", as_index=False)
+         .agg(n_trials=("isRight", "size"),
+              p_right=("isRight", "mean"))
+         .sort_values("stim")
+         .reset_index(drop=True)
+    )
+
+    if len(g) < 3:
+        raise ValueError(f"Need at least 3 stimulus levels to fit; got {len(g)}.")
+
+    # ---- build data matrix expected by psy library ----
+    xx = g["stim"].to_numpy(dtype=float)
+    nn = g["n_trials"].to_numpy(dtype=float)      # trials per stim
+    pp = g["p_right"].to_numpy(dtype=float)       # proportion right
+
+    data = np.vstack((xx, nn, pp))   # shape 3 x n
+
+    # ---- fit ----
+    pars, L = psy.mle_fit_psycho(data, "erf_psycho_2gammas", **params)
+
+    return pars, L, data, g
 
 
 
 
+def sams_side_association(df):
+    """
+    Implements Liebana et al. (2025) right/left association metric.
+
+    Required columns:
+      contrastRight, contrastLeft, choice, correctResponse
+    """
+
+    d = df.copy()
+    d["cDiff"] = d["contrastRight"] - d["contrastLeft"]
+    d["isRight"] = (d["choice"] == "Right")
+
+    # P(Right | 0)
+    p0 = d.loc[d["cDiff"] == 0, "isRight"].mean()
+
+    # P(Right | Right stim)  (cDiff > 0)
+    pR = d.loc[d["cDiff"] > 0, "isRight"].mean()
+
+    # P(Right | Left stim)   (cDiff < 0)
+    pL = d.loc[d["cDiff"] < 0, "isRight"].mean()
+
+    slope_R = abs(pR - p0)
+    slope_L = abs(pL - p0)
+
+    delta_slope = slope_R - slope_L   # Sam’s association index
+
+    if delta_slope > 0:
+        label = "Right-associating"
+    elif delta_slope < 0:
+        label = "Left-associating"
+    else:
+        label = "Balanced"
+
+    return {
+        "p0": p0,
+        "slope_R": slope_R,
+        "slope_L": slope_L,
+        "R_minus_L_slope": delta_slope,
+        "label": label
+    }
+
+
+import os
+import pickle
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+def compute_time_resolved_lateralisation(
+    recordingList,
+    event_type="stimulus",              # "stimulus" | "choice" | "reward"
+    subfolder="responsive_neurons",
+    use_zscored=True,
+    # which signed contrast-differences to treat as Right-strong vs Left-strong
+    pos_cdiffs=(0.125, 0.25, 0.5),
+    neg_cdiffs=(-0.125, -0.25, -0.5),
+    # imaging time axis definition
+    fRate=30,
+    pre_sec=2.0,
+    total_sec=8.0,
+    # baseline subtraction
+    baseline_window=(-0.2, 0.0),        # seconds in the same axis (relative to event)
+    # optionally restrict to rewarded trials if your dict is “... Rewarded”
+    # (we don’t filter by reward here; we use whatever keys exist)
+):
+    """
+    Computes time-resolved lateralisation per session:
+
+        L(t) = mean_trace_pos(t) - mean_trace_neg(t)
+
+    Where mean_trace_pos is the average (across selected +cDiff conditions)
+    and mean_trace_neg is the average (across selected -cDiff conditions).
+
+    Assumes dffTrace_mean dict keys start with signed numeric cDiff, e.g.:
+        "-0.25 Rewarded", "0.5 Rewarded", etc.
+    """
+
+    # build time axis
+    n_frames = int(total_sec * fRate)
+    time_axis = np.linspace(-pre_sec, total_sec - pre_sec, n_frames)
+
+    # baseline indices
+    b0 = int(np.argmin(np.abs(time_axis - baseline_window[0])))
+    b1 = int(np.argmin(np.abs(time_axis - baseline_window[1])))
+    if b1 == b0:
+        b1 += 1
+
+    pkl_name = "imaging-dffTrace_mean_zscored.pkl" if use_zscored else "imaging-dffTrace_mean.pkl"
+
+    rows = []
+
+    for ind in range(len(recordingList.recordingDate)):
+
+        if getattr(recordingList, "imagingDataExtracted", None) is not None:
+            if recordingList.imagingDataExtracted[ind] != 1:
+                continue
+
+        animal = recordingList.animalID[ind]
+        session = recordingList.sessionName[ind]
+        recDate = recordingList.recordingDate[ind]
+        pathname = recordingList.analysispathname[ind]
+        pkl_path = os.path.join(pathname, subfolder, pkl_name)
+
+        if not os.path.exists(pkl_path):
+            continue
+
+        try:
+            with open(pkl_path, "rb") as f:
+                dff_reward, dff_stim, dff_choice = pickle.load(f)
+
+            if event_type.lower() == "stimulus":
+                dff_dict = dff_stim
+            elif event_type.lower() == "choice":
+                dff_dict = dff_choice
+            elif event_type.lower() == "reward":
+                dff_dict = dff_reward
+            else:
+                raise ValueError("event_type must be 'stimulus', 'choice', or 'reward'")
+
+            pos_traces = []
+            neg_traces = []
+
+            # collect mean traces for each requested signed cDiff
+            for key, arr in dff_dict.items():
+                if arr is None:
+                    continue
+                # arr is typically (nCells, nFrames)
+                if arr.shape[1] != n_frames:
+                    # if your stored traces have different length, skip gracefully
+                    continue
+
+                # parse signed cDiff from key
+                try:
+                    cDiff = float(str(key).split()[0])
+                except Exception:
+                    continue
+
+                mean_trace = np.nanmean(arr, axis=0)  # average across cells
+
+                # baseline subtract using mean_trace baseline
+                baseline = np.nanmean(mean_trace[b0:b1])
+                mean_trace_bs = mean_trace - baseline
+
+                # assign
+                if np.isclose(cDiff, pos_cdiffs).any():
+                    pos_traces.append(mean_trace_bs)
+                elif np.isclose(cDiff, neg_cdiffs).any():
+                    neg_traces.append(mean_trace_bs)
+
+            # need at least 1 trace on each side
+            if (len(pos_traces) == 0) or (len(neg_traces) == 0):
+                continue
+
+            pos_mean = np.nanmean(np.vstack(pos_traces), axis=0)
+            neg_mean = np.nanmean(np.vstack(neg_traces), axis=0)
+
+            lat_trace = pos_mean - neg_mean  # Right-strong minus Left-strong
+
+            rows.append({
+                "animalID": animal,
+                "sessionName": session,
+                "recordingDate": recDate,
+                "event_type": event_type,
+                "n_pos_conditions": len(pos_traces),
+                "n_neg_conditions": len(neg_traces),
+                "pos_mean_trace": pos_mean,     # numpy array
+                "neg_mean_trace": neg_mean,     # numpy array
+                "lat_trace": lat_trace,         # numpy array
+            })
+
+        except Exception as e:
+            print(f"[WARN] failed session {session}: {e}")
+            continue
+
+    df_lat = pd.DataFrame(rows)
+    return df_lat, time_axis
+
+
+def plot_time_resolved_lateralisation(df_lat: pd.DataFrame, time_axis, title=None, xlim=None):
+    """
+    Plots mean ± SEM of lat_trace across sessions in df_lat.
+    """
+    if df_lat.empty:
+        print("No sessions to plot.")
+        return
+
+    mat = np.vstack(df_lat["lat_trace"].to_numpy())  # nSessions x nFrames
+    mean = np.nanmean(mat, axis=0)
+    sem = np.nanstd(mat, axis=0) / np.sqrt(np.sum(~np.isnan(mat[:, 0])))
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(time_axis, mean, linewidth=2)
+    ax.fill_between(time_axis, mean - sem, mean + sem, alpha=0.2)
+
+    ax.axvline(0, linestyle="--", linewidth=1)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Lateralisation (Right-strong − Left-strong)")
+    ax.set_title(title or "Time-resolved lateralisation")
+    if xlim is not None:
+        ax.set_xlim(xlim)
+
+
+def extract_prechoice_lat(df_lat, time_axis, win=(0.2, 0.8)):
+    mask = (time_axis >= win[0]) & (time_axis <= win[1])
+    df = df_lat.copy()
+    return df.assign(
+        lat_prechoice=df["lat_trace"].apply(lambda x: np.nanmean(x[mask]))
+    )

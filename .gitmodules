@@ -7,3 +7,9 @@
 [submodule "gramm"]
 	path = gramm
 	url = https://github.com/piermorel/gramm.git
+[submodule "psychofit"]
+	path = psychofit
+	url = https://github.com/cortex-lab/psychofit.git
+[submodule "linearEncodeModel"]
+	path = linearEncodeModel
+	url = https://github.com/isabellauhw/linearEncodeModel.git

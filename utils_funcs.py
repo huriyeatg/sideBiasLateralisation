@@ -1931,7 +1931,7 @@ def alignTwoSeries(path,
 
     for s in first_stim_pulses:
 
-        k = np.searchsorted(eye_rise, s, side='left')
+        k = np.searchsorted(eye_rise, s, side='right')  # find the first eye frame pulse after the stimulus pulse
 
         if k < len(eye_rise):
             first_frame_number_per_stim.append(k + 1)  # 1-based
@@ -1947,6 +1947,29 @@ def alignTwoSeries(path,
         print(f"First ten {eventSeries2} frame number for each stimulus:",
               first_frame_number_per_stim.shape,
               first_frame_number_per_stim[:10])
+        print(f"First ten {eventSeries2} frame number for each stimulus:",
+              first_frame_sample_per_stim.shape,
+              first_frame_sample_per_stim[:10])
     
+    # Lets plot the first frame number for the first stimulus to check if it makes sense
+    if verbose:
+        plt.figure(figsize=(10, 4))
+        plt.subplot(1, 2, 1)
+
+        plt.plot(eyeFrame, label='eyeFrame', color='blue', alpha=0.5)
+        plt.plot(stimFrame+2.5, label='stimFrame', color='orange', alpha=0.5)
+        plt.scatter(first_frame_sample_per_stim, eyeFrame[first_frame_sample_per_stim], color='red', label='Aligned frames')
+        plt.ylim(2.5, 3.5)
+        plt.xlim(first_frame_sample_per_stim[0] - 1000, first_frame_sample_per_stim[1] + 1000)
+        plt.show()
+
+        plt.subplot(1, 2, 2)
+        plt.plot(eyeFrame, label='eyeFrame', color='blue', alpha=0.5)
+        plt.plot(eye_rise, np.ones_like(eye_rise)*3, 'x', label='eyeFrame rising edges', color='red')
+        plt.ylim(2.5, 3.5)
+        plt.xlim(first_frame_sample_per_stim[0] - 1000, first_frame_sample_per_stim[0] + 1200)
+        plt.show()
+    
+    first_frame_number_per_stim = np.searchsorted(eye_rise, first_frame_sample_per_stim)
     # exclude the last frame
     return first_frame_number_per_stim[:-1]

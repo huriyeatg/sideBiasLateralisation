@@ -1847,3 +1847,106 @@ def singleTrace_splitter(flu, t_starts, pre_frames, post_frames):
     # stack into [num_trials x num_cells x trial_len] then transpose
     trial_flu = np.stack(chunks, axis=0).transpose(1, 2, 0)
     return trial_flu
+
+def alignTwoSeries(path,
+                recordingID,
+                eventSeries1='photodiode',
+                eventSeries2='eye_camera',
+                fs=2000,
+                gap_sec=2,
+                verbose=False):
+    """
+    Align stimulus pulses with camera frame pulses.
+
+    Parameters
+    ----------
+    path : str
+        Recording folder path
+    recordingID : str
+        Recording ID folder
+    eventSeries1 : str
+        Stimulus event file name prefix (default 'photodiode')
+    eventSeries2 : str
+        Camera event file name prefix (default 'eye_camera')
+    fs : int
+        Sampling rate (Hz)
+    gap_sec : float
+        Minimum gap between stimulus trains (sec)
+    verbose : bool
+        Print debugging information
+
+    Returns
+    -------
+    first_stim_pulses : array
+        Sample index of first photodiode pulse for each stimulus
+    first_frame_number_per_stim : array
+        Frame number (1-based) aligned to each stimulus
+    first_frame_sample_per_stim : array
+        Sample index of the corresponding eye frame pulse
+    """
+    # Load data
+    eyeFrameFileName = os.path.join(path, recordingID, f'{eventSeries2}.raw.npy')
+    stimFrameFileName = os.path.join(path, recordingID, f'{eventSeries1}.raw.npy')
+
+    eyeFrame = np.load(eyeFrameFileName)
+    stimFrame = np.load(stimFrameFileName).squeeze()
+
+    # Rising edge detector
+    def detect_rising_edges(signal, threshold=None):
+        signal = np.asarray(signal).squeeze()
+
+        if threshold is None:
+            threshold = (np.min(signal) + np.max(signal)) / 2
+
+        binary = signal > threshold
+        rising = np.where((~binary[:-1]) & (binary[1:]))[0] + 1
+        return rising, threshold
+
+    stim_rise, stim_thr = detect_rising_edges(stimFrame)
+    eye_rise, eye_thr = detect_rising_edges(eyeFrame)
+
+    if verbose:
+        print("All stim pulses detected:", len(stim_rise))
+        print("All eye pulses detected:", len(eye_rise))
+    # Detect first pulse per stimulus - there are multiple pulses per stimulus, we want to align to the first one. 
+    # We assume that there is at least gap_sec seconds between stimulus trains, 
+    # so if the gap between two pulses is larger than gap_sec, we consider it as a new stimulus train.
+    new_stim_gap_samples = int(gap_sec * fs)
+
+    first_stim_pulses = [stim_rise[0]]
+
+    for i in range(1, len(stim_rise)):
+        if stim_rise[i] - stim_rise[i - 1] > new_stim_gap_samples:
+            first_stim_pulses.append(stim_rise[i])
+
+    first_stim_pulses = np.array(first_stim_pulses)
+
+    if verbose:
+        print(f"First ten {eventSeries1} pulse per stimulus:",
+              first_stim_pulses.shape, first_stim_pulses[:10])
+
+    # Align to eye frames
+    first_frame_number_per_stim = []
+    first_frame_sample_per_stim = []
+
+    for s in first_stim_pulses:
+
+        k = np.searchsorted(eye_rise, s, side='left')
+
+        if k < len(eye_rise):
+            first_frame_number_per_stim.append(k + 1)  # 1-based
+            first_frame_sample_per_stim.append(eye_rise[k])
+        else:
+            first_frame_number_per_stim.append(np.nan)
+            first_frame_sample_per_stim.append(np.nan)
+
+    first_frame_number_per_stim = np.array(first_frame_number_per_stim)
+    first_frame_sample_per_stim = np.array(first_frame_sample_per_stim)
+
+    if verbose:
+        print(f"First ten {eventSeries2} frame number for each stimulus:",
+              first_frame_number_per_stim.shape,
+              first_frame_number_per_stim[:10])
+    
+    # exclude the last frame
+    return first_frame_number_per_stim[:-1]

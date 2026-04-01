@@ -245,48 +245,27 @@ def shutter_start_frame(paq=None, stim_chan_name=None, frame_clock=None,
     frames = np.transpose(frames)
     return frames
 
-def stim_start_frame_Dual2Psetup(frame_clock, stim_times):
-    # used in the analysis code.
-    #
-    ''' Returns the frames from the frame_cloc immediately preeceding stim.
-    This code needs the frame_clock from txt_file
-    '''
-    if isinstance(frame_clock, np.ndarray)==False:
-        frame_clock = frame_clock.values
-    if isinstance(stim_times, np.ndarray)==False:
-        stim_times = stim_times.values
+def stim_start_frame_Dual2Psetup(frame_clock, stim_times, excIndOutput = None):
+    if not isinstance(frame_clock, np.ndarray): frame_clock = frame_clock.values
+    if not isinstance(stim_times, np.ndarray): stim_times = stim_times.values
 
-    plane=0
-    n_planes=1 # might be useful in the future
-    fs = 20000
-    stim_times = np.round(stim_times*fs)
-    stim_times = [stim if (stim < np.nanmax(frame_clock)) or np.isnan(stim) else stim_times[i] for i, stim in enumerate(stim_times)]
+    frame_clock = frame_clock.flatten()
+    stim_times = stim_times.flatten()
 
-    frames = []
+    plane, n_planes, fs = 0, 1, 20000
+    fc = frame_clock[plane::n_planes]
+    stim_times = np.round(stim_times * fs)
 
-    for stim in stim_times:
-        if ~np.isnan(stim) and (stim < np.nanmax(frame_clock)) and (stim > np.nanmin(frame_clock)):
-        # the sample time of the frame immediately preceeding stim
-#         frame = next(frame_clock[i-1] for i, sample in enumerate(frame_clock[plane::n_planes])
-#                      if sample - stim > 0)
-            frame = next(i-1 for i, sample in enumerate(frame_clock[plane::n_planes])
-                        if sample - stim > 0)
-        else:
-            frame = np.nan
+    idx = np.searchsorted(fc, stim_times) - 1
+    valid = (~np.isnan(stim_times)) & (idx >= 0) & (stim_times > np.nanmin(fc)) & (stim_times < np.nanmax(fc))
 
-        frames.append(frame)
-    return (frames)
+    excludedIndex = np.where(~valid)[0]
+    frames = idx[valid].tolist()
+
+    return frames if excIndOutput is None else (frames, excludedIndex.tolist())
 
 def stim_start_frame(paq=None, stim_chan_name=None, frame_clock=None,
                      stim_times=None, threshold=1, plane=0, n_planes=1):
-    # used in _analysis code.
-    '''Returns the frames from a frame_clock that a stim occured on.
-       Either give paq and stim_chan_name as arugments if using 
-       unprocessed paq. 
-       Or predigitised frame_clock and stim_times in reference frame
-       of that clock
-
-    '''
 
     if frame_clock is None:
         frame_clock = paq_data(paq, 'frame_clock',threshold, threshold_ttl=True)
@@ -462,70 +441,6 @@ def flu_splitter(flu,t_starts, pre_frames, post_frames):
 
     return trial_flu
 
-def flu_splitter2(flu, stim_times, frames_ms, pre_frames=10, post_frames=30):
-
-    stim_idxs = stim_start_frame_mat(stim_times, frames_ms, debug_print=False)
-
-    stim_idxs = stim_idxs[:, np.where((stim_idxs[0, :]-pre_frames > 0) &
-                                      (stim_idxs[0, :] + post_frames 
-                                      < flu.shape[1]))[0]]
-
-    n_trials = stim_idxs.shape[1]
-    n_cells = frames_ms.shape[0]
-
-    for i, shift in enumerate(np.arange(-pre_frames, post_frames)):
-        if i == 0:
-            trial_idx = stim_idxs + shift
-        else:
-            trial_idx = np.dstack((trial_idx, stim_idxs + shift))
-
-    tot_frames = pre_frames + post_frames
-    trial_idx = trial_idx.reshape((n_cells, n_trials*tot_frames))
-
-    flu_trials = []
-    for i, idxs in enumerate(trial_idx):
-        idxs = idxs[~np.isnan(idxs)].astype('int')
-        flu_trials.append(flu[i, idxs])
-
-    n_trials_valid = len(idxs)
-    flu_trials = np.array(flu_trials).reshape(
-        (n_cells, int(n_trials_valid/tot_frames), tot_frames))
-
-    return flu_trials
-
-def flu_splitter3(flu, stim_times, frames_ms, pre_frames=10, post_frames=30):
-
-    stim_idxs = stim_start_frame_mat(stim_times, frames_ms, debug_print=False)
-
-    # not 100% sure about this line, keep an eye
-    stim_idxs[:, np.where((stim_idxs[0, :]-pre_frames <= 0) |
-                          (stim_idxs[0, :] + post_frames 
-                           >= flu.shape[1]))[0]] = np.nan
-
-    n_trials = stim_idxs.shape[1]
-    n_cells = frames_ms.shape[0]
-
-    for i, shift in enumerate(np.arange(-pre_frames, post_frames)):
-        if i == 0:
-            trial_idx = stim_idxs + shift
-        else:
-            trial_idx = np.dstack((trial_idx, stim_idxs + shift))
-
-    tot_frames = pre_frames + post_frames
-    trial_idx = trial_idx.reshape((n_cells, n_trials*tot_frames))
-
-    # flu_trials = np.repeat(np.nan, n_cells*n_trials*tot_frames)
-    # flu_trials = np.reshape(flu_trials, (n_cells, n_trials, tot_frames))
-    flu_trials = np.full_like(trial_idx, np.nan)
-    # iterate through each cell and add trial frames
-    for i, idxs in enumerate(trial_idx):
-
-        non_nan = ~np.isnan(idxs)
-        idxs = idxs[~np.isnan(idxs)].astype('int')
-        flu_trials[i, non_nan] = flu[i, idxs]
-
-    flu_trials = np.reshape(flu_trials, (n_cells, n_trials, tot_frames))
-    return flu_trials
 
 def closest_frame_before(clock, t):
     ''' Returns the idx of the frame immediately preceeding 
@@ -1716,7 +1631,7 @@ def snr_filter_cells(fluR, top_percentile=90, bottom_percentile=50, snr_thresh=2
     :param: savepath            = if info & blockName given, define savepath to save summary figures
     """
 
-    flu = fluR #lutils.preprocess_flu(fluR, detrend=True, do_zscore=zscore, plot=False, smooth_method=None)
+    flu = lutils.preprocess_flu(fluR, detrend=True, do_zscore=zscore, plot=False, smooth_method=None)
     signal, noise = np.percentile(abs(flu), top_percentile, axis=1), np.percentile(abs(flu), bottom_percentile, axis=1)
     snr = abs(signal/noise)
     

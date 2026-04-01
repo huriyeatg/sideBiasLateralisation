@@ -21,6 +21,8 @@ import os
 import cupy
 import LakLabAnalysis.Utility.utils_funcs as lutils
 import psychofit.psychofit as psy
+from scipy.stats import linregress
+from collections import defaultdict
 
 
 class analysis:
@@ -51,7 +53,7 @@ class analysis:
             self.rootPath          = "C:/Users/Lak Lab/Documents/Github/sideBiasLateralisation"
         else:
             print('Computer setting is not set.')
-        self.analysisPath = os.path.join(self.rootPath, 'analysis') # 'D:\\decision-making-ev\\analysis' # 
+        self.analysisPath =  'Y:\\sideBiasLateralisation\\analysis' # os.path.join(self.rootPath, 'analysis')
         self.figsPath     = os.path.join(self.rootPath, 'figs')
         self.ops_suite2pPath = os.path.join(self.rootPath, 'ops_suite2p.json')
         self.ops_yaml_path = os.path.join(self.rootPath, 'ops_suite2p.yaml')
@@ -104,7 +106,7 @@ class analysis:
 
                     # get performance
                     try:
-                        stim_type, performance = get_stim_and_performance(block)
+                        session_type, stim_type, performance = get_stim_and_performance(block)
                     except Exception as e:
                         print(f"Most likely expRef does not match {file_path}: {e}")
                         stim_type, performance = None, None
@@ -127,6 +129,7 @@ class analysis:
                     twoP_exist = len(tiff_files) > 0
                     imaging_filename = tiff_files[0] if twoP_exist else None
 
+
                     # Collect row
                     row_data = {
                         'animalID': animal_id, 
@@ -142,7 +145,8 @@ class analysis:
                         'duration': expDuration/60, # in mins
                         'rigName': rigName,
                         'performance': performance,
-                        'stimType': stim_type
+                        'stimType': stim_type,
+                        'sessionType': session_type
 
                     }
                     rows.append(row_data)
@@ -391,6 +395,20 @@ def get_stim_and_performance(block):
     b["cDiff"] = b["contrastRight"] - b["contrastLeft"]
     goodTrials = (b["repeatNumber"] == 1) & (b["choice"] != 0)
 
+    # # session_type
+    n_both_zero = ((b["contrastRight"] == 0) & (b["contrastLeft"] == 0)).sum()
+    n_either_zero = ((b["contrastRight"] == 0) | (b["contrastLeft"] == 0)).sum()
+    n_both_nonzero = ((b["contrastRight"] != 0) & (b["contrastLeft"] != 0)).sum()
+          
+    if (len(b['cDiff'].unique()) <= 5)  and (n_either_zero > 0):
+        session_type = "LimitedContrasts" # min 2 contrasts per side + zero-contrast trials
+    elif  (len(b['cDiff'].unique()) >5 ) and (n_either_zero > 0) and (n_both_nonzero == 0):
+        session_type = "SingleFullContrasts"  # SINGLE STIM: many contrasts per side + zero-contrast trials
+    elif  (len(b['cDiff'].unique()) >5 ) and (n_either_zero > 0) and (n_both_nonzero >10):
+        session_type = "TwoFullContrasts" 
+    else:
+        session_type = "Training"
+
     # outcomeTime row-wise nanmean of [rewardTime, punishSoundOnsetTime] (computed but not used)
     rewardTime = _arr(_get(events, 'rewardTimes', None))  # some profiles
     if rewardTime is None and outputs is not None:
@@ -417,7 +435,7 @@ def get_stim_and_performance(block):
     else:
         perf = np.nan
 
-    return stim_type, float(perf)
+    return session_type, stim_type, float(perf)
 
 def save_png_with_contrast(ref_file, out_png, also_save_16bit=False, p_lo=1, p_hi=99.5):
     img = imread(ref_file)
@@ -466,6 +484,9 @@ def parse_pv_env(env_path):
         if el is not None and el.find("EnumIndex") is not None:
             return el.find("EnumIndex").get("value")
         return None
+    def get_axis_value(axis):
+        el = root.find(f".//PVStateValue[@key='positionCurrent']/SubindexedValues[@index='{axis}']/SubindexedValue")
+        return float(el.get('value')) if el is not None else None
 
     # direct keys
     objective = find_value('objectiveLens') or find_value('objectiveLensMag')
@@ -476,8 +497,9 @@ def parse_pv_env(env_path):
     # scan orientation
     scan_rot = find_value('scanRotation')      # degrees
     scan_flip = find_enum('scanDirection')     # 0=normal, 1=flipped (often along Y)
-    scan_center_y = find_value('scanCenterY')  # µm offset on Y
-    scan_size_y = find_value('scanSizeY')      # field height µm
+    yAxis = get_axis_value('YAxis')   # stage Y position, used to infer recording side in which_side_from_env
+    xAxis = get_axis_value('XAxis')   # stage X position, not used currently but could be informative
+    zAxis = get_axis_value('ZAxis')   # stage Z position, not used currently but could be informative
 
     # calibration FOV under PVObjectiveLensController
     calib = root.find(".//PVObjectiveLensController/PVObjective[@name='_x0031_6X']/Calibration")
@@ -502,8 +524,9 @@ def parse_pv_env(env_path):
         # orientation
         "scan_rotation_deg": float(scan_rot) if scan_rot else 0.0,
         "scan_flip_Y": (scan_flip == "1"),  # True if Y flipped
-        "scan_center_Y_um": float(scan_center_y) if scan_center_y else None,
-        "scan_size_Y_um": float(scan_size_y) if scan_size_y else None
+        "YAxis": float(yAxis) if yAxis else None,
+        "XAxis": float(xAxis) if xAxis else None,
+        "ZAxis": float(zAxis) if zAxis else None,
     }
 
 def add_trial_side_info(behData: pd.DataFrame, tiff_path: str) -> pd.DataFrame:
@@ -650,19 +673,20 @@ def suite2p_extraction(
 
     # 2) set output and temp-disk locations
     ops["save_path0"] = tiff_path
+    ops["fs"] = imagingDetails.get("fs_Hz")
 
     # 3) override from imagingDetails
-    diameter_um = 7.9
-    if imagingDetails:
-        zoom = imagingDetails.get("optical_zoom")          # Hz
-        pixelsize_um  = imagingDetails.get("pixel_size_um")
-        ops["fs"] = imagingDetails.get("fs_Hz") 
-        print(ops["fs"])
-        ops['diameter'] = int(np.round(diameter_um / pixelsize_um))
+    # diameter_um = 
+    # if imagingDetails:
+    #     zoom = imagingDetails.get("optical_zoom")          # Hz
+    #     pixelsize_um  = imagingDetails.get("pixel_size_um")
+    #     ops["fs"] = imagingDetails.get("fs_Hz") 
+    #     print(ops["fs"])
+    #     ops['diameter'] = int(np.round(diameter_um / pixelsize_um))
 
 
     # dia_px = max(4, int(round(base_soma_um / float(px_um))))
-    # print(f"Using diameter {dia_px} pixels (base {base_soma_um} um, px size {px_um:.3f} um)")
+    #print(f"Using diameter {dia_px} pixels (base {base_soma_um} um, px size {px_um:.3f} um)")
     # ops["diameter"] = 11# dia_px
 
     if genotype== '8s':
@@ -771,20 +795,23 @@ def update_info(info):
 
     return info
 
-
 def build_trial_types(behData: pd.DataFrame,
-                      rewarded: pd.Series,
-                      choice: pd.Series,
-                      stimSide: pd.Series,
-                      stimulus: np.ndarray,
-                      recordingSideStim: pd.Series,
-                      biasStim: pd.Series,
-                      recordingSideChoice: pd.Series,
-                      biasChoice: pd.Series) -> tuple[list[str], list[np.ndarray]]:
-    """
-    Reproduces your exact tTypesName + tTypes logic as arrays of booleans.
-    """
+                      tiff_path,
+                      idx_keep = None):
+
+    rewarded    =  behData['rewardTime'].notna() #
+    choice      = behData['choice']
+    stimSide    = behData['correctResponse']
+    stimulus = np.where(behData['contrastLeft'] != 0, -behData['contrastLeft'], behData['contrastRight'])
+    behData_aug = add_trial_side_info(behData, tiff_path)
+    
+    recordingSideStim = behData_aug['recordingSideStim']
+    biasStim = behData_aug['biasStim']
+    recordingSideChoice = behData_aug['recordingSideChoice']
+    biasChoice = behData_aug['biasChoice']
+
     tTypesName = [
+        'All Trials',
         'Rewarded','Unrewarded',
         'Left Choices','Right Choices',
         'Rewarded Left','Rewarded Right',
@@ -848,6 +875,7 @@ def build_trial_types(behData: pd.DataFrame,
     ch_hemi_c  = (recordingSideChoice == 'contra').to_numpy()
 
     tTypes: list[np.ndarray] = [
+        rewarded_bool | ~rewarded_bool,
         rewarded_bool, ~rewarded_bool,
         choice_l, choice_r,
         rewarded_bool & choice_l, rewarded_bool & choice_r,
@@ -960,9 +988,82 @@ def build_trial_types(behData: pd.DataFrame,
         ch_hemi_i, ch_hemi_c
     ]
 
+    # Exclude trials that do not fit criteria!  
+    keep_mask = behData.index.isin(idx_keep) if idx_keep is not None else np.ones(len(behData), dtype=bool)
+    tTypes = [t & keep_mask for t in tTypes]
+
     return tTypesName, tTypes
+    
+def get_imagingExtractionParams():
+    fRate_imaging = 30
+    pre_stim_sec = 2 # sec
+    total_time = 8
+    analysisWindow_time = 1 # sec
+    analysisWindow_min = 0.3 # sec
 
+    return fRate_imaging, pre_stim_sec, total_time, analysisWindow_time, analysisWindow_min
 
+def get_startFramePerTrial(analysispathname, sessionName,rawpathname, event_type, exclude = None, behOut = None):
+    if exclude is None:
+        beh_df, idx_keep, _ = clean_session_behavior(analysispathname, sessionName,rawpathname)
+    else:
+        _,idx_keep, beh_df = clean_session_behavior(analysispathname, sessionName,rawpathname)
+    fRate_imaging, pre_stim_sec, total_time, analysisWindow_time, analysisWindow_min = get_imagingExtractionParams()
+
+    n_trials = len(beh_df)
+
+    if event_type == 'stimulus':
+        # assuming these are in seconds
+        analysisWindow = beh_df['choiceStartTime'].to_numpy() - beh_df['stimulusOnsetTime'].to_numpy()
+        analysisWindow = np.where(
+                np.isnan(analysisWindow) | (analysisWindow <= 0),
+                analysisWindow_min,
+                analysisWindow)
+        start_frame = np.full(n_trials, int(pre_stim_sec * fRate_imaging), dtype=int)
+        end_frame = start_frame + (analysisWindow * fRate_imaging).astype(int)
+
+    elif event_type == 'reward':
+        analysisWindow = np.full(n_trials, analysisWindow_time)
+        start_frame = np.full(n_trials, int(pre_stim_sec * fRate_imaging), dtype=int)
+        end_frame = start_frame + (analysisWindow * fRate_imaging).astype(int)
+
+    else:
+        raise ValueError("event_type must be 'stimulus' or 'reward'")
+    if behOut is None:
+        return start_frame, end_frame
+    else:
+        return start_frame, end_frame, idx_keep, beh_df
+
+def clean_session_behavior(analysispathname,sessionName, rawpathname):
+    ' Criterias to exclude trials'
+    ' EXCLUDE 1:  trials with response time greater than 2 seconds'
+    ' EXCLUDE 2:  trials where choice start time is before go cue time'
+    csv_path = os.path.join(analysispathname, f"{sessionName}_CorrectedeventTimes.csv")
+    beh_df = pd.read_csv(csv_path)
+
+    ### EXCLUDE trials with missing imaging frames (e.g. due to PAQ issues)
+    filenameTXT = os.path.join(rawpathname,'twoP') +'\*_imaging_frames.txt'
+    filenameTXT= [f for f in glob.glob(filenameTXT)]    
+    frame_clock = pd.read_csv(filenameTXT[0],  header= None)
+
+    visTimes    = beh_df['stimulusOnsetTime'] + beh_df['trialOffsets']
+    _, excludedIndex = utils.stim_start_frame_Dual2Psetup(frame_clock, visTimes, excIndOutput = True)
+    beh_df = beh_df.drop(index=excludedIndex)
+
+    # EXCLUSION CRITERIA 1: Calculate response time > 2 seconds
+    beh_df['responseTime'] = beh_df['choiceCompleteTime'] - beh_df['stimulusOnsetTime']
+    mask_longRT = (beh_df['choiceCompleteTime'] - beh_df['stimulusOnsetTime']) > 2# EXCLUDE 1:  trials with response time greater than 2 seconds
+    idx_longRT = beh_df.index[mask_longRT]
+    # EXCLUSION CRITERIA 2: Calculate choice start time before go cue time
+    mask_preGoCue = (beh_df['choiceStartTime']  - beh_df['goCueTime'] ) < -0.2 # EXCLUDE 2:  trials where choice start time is before go cue time
+    idx_preGoCue = beh_df.index[mask_preGoCue]
+    combined_idx = idx_longRT.union(idx_preGoCue)
+    idx_keep = beh_df.index.difference(combined_idx)
+    # Get cleaned dataframe
+    beh_df_clean = beh_df.drop(index=combined_idx)
+    #print(f"{len(idx_keep)} trials: {len(idx_longRT)} long RT, {len(idx_preGoCue)} with pre-go-cue from {len(beh_df)}.")
+
+    return beh_df, idx_keep, beh_df_clean
 
 def construct_info_path(info, blockName, folder=None, file=None, load='path'):
     """ ST 05/2025: 
@@ -1080,18 +1181,7 @@ def get_mean_dff_by_contrast_diff_df(
     subfolder="responsive_neurons",
     use_zscored=True,
     allowed_cdiffs=(-0.5, -0.25, -0.125, 0.125, 0.25, 0.5),
-    biasType = 'bias',
-):
-    """
-    Returns a DataFrame with mean dF/F per session per contrast-difference (Right - Left).
-
-    Assumes dffTrace_mean dict keys are like:
-        '-0.5 Rewarded', '-0.25 Rewarded', ..., '0.5 Rewarded'
-    i.e. the first token in the key is the numeric contrast difference.
-
-    Output columns:
-        animal, session, recordingDate, cDiff, mean_dff
-    """
+    biasType = 'bias'):
 
     fRate = 30
     pre_stim_sec = 2
@@ -1145,7 +1235,7 @@ def get_mean_dff_by_contrast_diff_df(
                 if arr.shape[1] <= end_frame:
                     continue
 
-                # ✅ Correct parsing for your structure:
+                # Correct parsing for your structure:
                 # key example: "-0.25 Rewarded" -> cDiff = -0.25
                 try:
                     cDiff = float(str(key).split()[0])
@@ -1180,117 +1270,112 @@ def get_mean_dff_by_contrast_diff_df(
 
     return pd.DataFrame(rows)
 
+def calculateContrastAverage(df):
 
+    EXCLUDE = np.array([-0.0625, 0.0625], dtype=float)
+    contrast_stats = {}
+    good = (df['repeatNumber'] == 1) & (df['choice'] != 'NoGo')
+    c_diff = df['contrastRight'] - df['contrastLeft']
 
-def fit_psy_AllContrasts(
-    df: pd.DataFrame,
-    stim_mode: str = "cDiff",   # "cDiff" or "contrastRight"
+    for contrast in sorted(c_diff.unique()):
+        if np.any(np.isclose(float(contrast), EXCLUDE, atol=1e-12)):
+            continue
+        trials = good & np.isclose(c_diff, contrast)
+        n_trials = trials.sum()
+
+        if n_trials > 0:
+            p_right = (df.loc[trials, 'choice'] == 'Right').mean()
+            contrast_stats[float(contrast)] = {
+                "p_right": float(p_right),
+                "n_trials": int(n_trials) }
+
+    return contrast_stats
+
+def fit_psy_AllContrasts( df: pd.DataFrame,
     use_percent: bool = True,
-    params: dict | None = None
-):
-    """
-    Fit a psychometric curve using psy.mle_fit_psycho on *all available contrast levels*.
-
-    df must contain:
-        - contrastRight, contrastLeft (if stim_mode="cDiff")
-        - choice (string, e.g. "Right"/"Left")
-
-    Returns:
-        pars : np.ndarray
-        L    : float (likelihood or cost returned by library)
-        data : np.ndarray (3 x n matrix used for fit)
-        summary_df : pd.DataFrame (stim level, n trials, pRight)
-    """
-
+    params: dict | None = None ):
     if params is None:
-        # Your defaults
         params = {
-            # The minimum allowable parameter values
-            'parmin': np.array([-50., 10., 0., 0.]),
-            # The maximum allowable parameter values
-            'parmax': np.array([50., 40., .3, .3]),
-            # Non-zero starting parameters, used to try to avoid local minima
-            'parstart': np.array([0., 20., .1, .1]),
-            # The number of fits to run
-            'nfits': 10
-        }
+            'parmin': np.array([-40., 5., 0., 0.]),
+            'parmax': np.array([40., 30., 0.15, 0.15]),
+            'parstart': np.array([0., 10., 0.02, 0.02]),
+            'nfits': 30 }
+        
+    contrast_stats = calculateContrastAverage(df)
 
-    d = df.copy()
+    stim_list = []
+    n_trials_list = []
+    p_right_list = []
 
-    # ---- compute stimulus level per trial ----
-    if stim_mode == "cDiff":
-        # signed difference: Right - Left
-        d["stim"] = d["contrastRight"] - d["contrastLeft"]
-    elif stim_mode == "contrastRight":
-        d["stim"] = d["contrastRight"]
-    else:
-        raise ValueError("stim_mode must be 'cDiff' or 'contrastRight'")
+    for contrast, stats in contrast_stats.items():
+        # ---- exclude 0 contrast ----
+        if np.isclose(float(contrast), 0.0):
+            continue
+        stim_val = float(contrast) * 100.0 if use_percent else float(contrast)
 
-    # convert to % contrast if desired (recommended with your bounds)
-    if use_percent:
-        d["stim"] = d["stim"] * 100.0
+        stim_list.append(stim_val)
+        n_trials_list.append(int(stats["n_trials"]))
+        p_right_list.append(float(stats["p_right"]))
 
-    # ---- compute rightward choice (0/1) ----
-    # (adjust if your choice labels differ)
-    d["isRight"] = (d["choice"] == "Right").astype(int)
-
-    # drop missing
-    d = d.dropna(subset=["stim", "isRight"])
-
-    # ---- group by stimulus level ----
-    g = (
-        d.groupby("stim", as_index=False)
-         .agg(n_trials=("isRight", "size"),
-              p_right=("isRight", "mean"))
-         .sort_values("stim")
-         .reset_index(drop=True)
-    )
+    g = pd.DataFrame({
+        "stim": stim_list,
+        "n_trials": n_trials_list,
+        "p_right": p_right_list }).sort_values("stim").reset_index(drop=True)
 
     if len(g) < 3:
         raise ValueError(f"Need at least 3 stimulus levels to fit; got {len(g)}.")
 
-    # ---- build data matrix expected by psy library ----
+    # build data matrix expected by psy library
     xx = g["stim"].to_numpy(dtype=float)
-    nn = g["n_trials"].to_numpy(dtype=float)      # trials per stim
-    pp = g["p_right"].to_numpy(dtype=float)       # proportion right
+    nn = g["n_trials"].to_numpy(dtype=float)
+    pp = g["p_right"].to_numpy(dtype=float)
 
-    data = np.vstack((xx, nn, pp))   # shape 3 x n
-
-    # ---- fit ----
+    data = np.vstack((xx, nn, pp))
     pars, L = psy.mle_fit_psycho(data, "erf_psycho_2gammas", **params)
 
     return pars, L, data, g
 
+def computeSideAssociation(df: pd.DataFrame):
+    """ Implements Liebana et al. (2025) right/left association metric
+    using mFun.calculateContrastAverage(df). """
 
+    contrast_stats = calculateContrastAverage(df)
 
+    contrasts = []
+    probs = []
 
-def sams_side_association(df):
-    """
-    Implements Liebana et al. (2025) right/left association metric.
+    for contrast, stats in contrast_stats.items():
+        contrasts.append(float(contrast))
+        probs.append(float(stats["p_right"]))
 
-    Required columns:
-      contrastRight, contrastLeft, choice, correctResponse
-    """
+    contrasts = np.array(contrasts)
+    probs = np.array(probs)
 
-    d = df.copy()
-    d["cDiff"] = d["contrastRight"] - d["contrastLeft"]
-    d["isRight"] = (d["choice"] == "Right")
+    # sort contrasts
+    order = np.argsort(contrasts)
+    contrasts = contrasts[order]
+    probs = probs[order]
 
     # P(Right | 0)
-    p0 = d.loc[d["cDiff"] == 0, "isRight"].mean()
+    zero_mask = np.isclose(contrasts, 0)
+    p0 = probs[zero_mask][0] if np.any(zero_mask) else np.nan
 
-    # P(Right | Right stim)  (cDiff > 0)
-    pR = d.loc[d["cDiff"] > 0, "isRight"].mean()
+    # P(Right | Right stim)
+    pos_mask = contrasts > 0
+    pR = np.mean(probs[pos_mask]) if np.any(pos_mask) else np.nan
 
-    # P(Right | Left stim)   (cDiff < 0)
-    pL = d.loc[d["cDiff"] < 0, "isRight"].mean()
+    # P(Right | Left stim)
+    neg_mask = contrasts < 0
+    pL = np.mean(probs[neg_mask]) if np.any(neg_mask) else np.nan
 
-    slope_R = abs(pR - p0)
-    slope_L = abs(pL - p0)
+    slope_R = (pR - p0) if not np.isnan(pR) and not np.isnan(p0) else np.nan
+    slope_L = (pL - p0) if not np.isnan(pL) and not np.isnan(p0) else np.nan
 
-    delta_slope = slope_R - slope_L   # Sam’s association index
+    delta_slope = np.abs(slope_R) - np.abs(slope_L)
 
-    if delta_slope > 0:
+    if np.isnan(delta_slope):
+        label = "Undefined"
+    elif delta_slope > 0:
         label = "Right-associating"
     elif delta_slope < 0:
         label = "Left-associating"
@@ -1299,19 +1384,49 @@ def sams_side_association(df):
 
     return {
         "p0": p0,
+        "pR": pR,
+        "pL": pL,
         "slope_R": slope_R,
         "slope_L": slope_L,
         "R_minus_L_slope": delta_slope,
+        "stimSensitivity": (slope_R + slope_L)/2,
+        "stimSensitivityBias": (slope_R - slope_L)/(slope_R + slope_L),
         "label": label
     }
 
+def computeStimulusBias(df: pd.DataFrame):
+    """ Compute stimulus bias based on slope difference between
+    right and left contrasts. """
+    contrast_stats = calculateContrastAverage(df)
 
-import os
-import pickle
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+    contrasts = []
+    probs = []
+    for contrast, stats in contrast_stats.items():
+        contrasts.append(float(contrast))
+        probs.append(float(stats["p_right"]))
 
+    contrasts = np.array(contrasts)
+    probs = np.array(probs)
+    # sort contrasts
+    order = np.argsort(contrasts)
+    contrasts = contrasts[order]
+    probs = probs[order]
+    # masks
+    left_mask = contrasts < 0
+    right_mask = contrasts > 0
+
+    slopeL = np.nan
+    slopeR = np.nan
+
+    if np.sum(left_mask) >= 2:
+        slopeL = linregress(contrasts[left_mask], probs[left_mask]).slope
+
+    if np.sum(right_mask) >= 2:
+        slopeR = linregress(contrasts[right_mask], probs[right_mask]).slope
+
+    stimulusBias = slopeR - slopeL
+
+    return slopeL, slopeR, stimulusBias
 
 def compute_time_resolved_lateralisation(
     recordingList,
@@ -1442,7 +1557,6 @@ def compute_time_resolved_lateralisation(
     df_lat = pd.DataFrame(rows)
     return df_lat, time_axis
 
-
 def plot_time_resolved_lateralisation(df_lat: pd.DataFrame, time_axis, title=None, xlim=None):
     """
     Plots mean ± SEM of lat_trace across sessions in df_lat.
@@ -1465,7 +1579,6 @@ def plot_time_resolved_lateralisation(df_lat: pd.DataFrame, time_axis, title=Non
     ax.set_title(title or "Time-resolved lateralisation")
     if xlim is not None:
         ax.set_xlim(xlim)
-
 
 def extract_prechoice_lat(df_lat, time_axis, win=(0.2, 0.8)):
     mask = (time_axis >= win[0]) & (time_axis <= win[1])
